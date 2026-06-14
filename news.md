@@ -163,28 +163,33 @@ public class UpstoxNewsClient {
         JsonNode data = root.path("data");
         List<NewsArticle> articles = new ArrayList<>();
 
-        if (data.isArray()) {
-            for (JsonNode item : data) {
-                String heading = item.path("heading").asText("");
-                String summary = item.path("summary").asText("");
-                String articleLink = item.path("article_link").asText("");
-                long publishedTime = item.path("published_time").asLong(System.currentTimeMillis());
-                
-                String sourceHash = generateSourceHash(heading, articleLink, publishedTime);
+        if (data.isObject()) {
+            data.fields().forEachRemaining(entry -> {
+                JsonNode items = entry.getValue();
+                if (items.isArray()) {
+                    for (JsonNode item : items) {
+                        String heading = item.path("heading").asText("");
+                        String summary = item.path("summary").asText("");
+                        String articleLink = item.path("article_link").asText("");
+                        long publishedTime = item.path("published_time").asLong(System.currentTimeMillis());
+                        
+                        String sourceHash = generateSourceHash(heading, articleLink, publishedTime);
 
-                NewsArticle article = NewsArticle.builder()
-                        .isin(isin)
-                        .instrumentKey(instrumentKey)
-                        .heading(heading)
-                        .summary(summary)
-                        .thumbnail(item.path("thumbnail").asText(""))
-                        .articleLink(articleLink)
-                        .publishedTime(publishedTime)
-                        .sourceHash(sourceHash)
-                        .build();
+                        NewsArticle article = NewsArticle.builder()
+                                .isin(isin)
+                                .instrumentKey(instrumentKey)
+                                .heading(heading)
+                                .summary(summary)
+                                .thumbnail(item.path("thumbnail").asText(""))
+                                .articleLink(articleLink)
+                                .publishedTime(publishedTime)
+                                .sourceHash(sourceHash)
+                                .build();
 
-                articles.add(article);
-            }
+                        articles.add(article);
+                    }
+                }
+            });
         }
         return articles;
     }
@@ -322,7 +327,7 @@ import java.io.IOException;
 @Slf4j
 public class UpstoxCredentialManager {
 
-    @Value("${upstox.env-path}")
+    @Value("${upstox.auth.credential-file}")
     private String envPath;
 
     private String accessToken;
@@ -402,8 +407,8 @@ public class NewsController {
 
     @GetMapping("/instrument/{isin}")
     public ResponseEntity<List<NewsArticle>> getInstrumentNews(@PathVariable String isin) {
-        List<NewsArticle> articles = instrumentNewsService.getInstrumentNews(isin);
-        return ResponseEntity.ok(articles);
+        List<NewsArticle> articles = instrumentNewsService.getNewsForIsins(java.util.Collections.singleton(isin)).get(isin);
+        return ResponseEntity.ok(articles != null ? articles : java.util.Collections.emptyList());
     }
 
     @GetMapping(value = "/holdings", produces = MediaType.APPLICATION_JSON_VALUE)
@@ -532,10 +537,8 @@ public class NewsStartupRunner implements CommandLineRunner {
 
     @Override
     public void run(String... args) {
-        log.info("Vega News Application started. Initializing views...");
-        builderService.buildHoldingsView();
-        builderService.buildPositionsView();
-        log.info("Initialization complete.");
+        log.info("Vega News Application started.");
+        log.info("Initialization complete. Scheduled tasks will handle news view generation shortly.");
     }
 }
 ```
@@ -549,7 +552,13 @@ import com.vega.news.model.NewsArticle;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 @Slf4j
 @Service
@@ -560,24 +569,65 @@ public class InstrumentNewsService {
     private final NewsInstrumentArchiveService archiveService;
     private final InstrumentService instrumentService;
 
-    public List<NewsArticle> getInstrumentNews(String isin) {
-        // 1. Check archive first
-        List<NewsArticle> archivedArticles = archiveService.loadArchive(isin);
+    public Map<String, List<NewsArticle>> getNewsForIsins(Set<String> isins) {
+        Map<String, List<NewsArticle>> result = new HashMap<>();
+        Map<String, String> isinToInstrumentKey = new HashMap<>();
 
-        // 2. Fetch missing / latest from upstox
-        String instrumentKey = instrumentService.getInstrumentKeyByIsin(isin);
-        if (instrumentKey != null) {
-            List<NewsArticle> fetchedArticles = newsClient.fetchNews("instrument_keys", isin, instrumentKey);
-            if (!fetchedArticles.isEmpty()) {
-                archiveService.appendNewArticles(isin, fetchedArticles);
-                // Reload after append to return the full unified list
-                archivedArticles = archiveService.loadArchive(isin);
+        // Group into batches of 30
+        List<String> currentBatchKeys = new ArrayList<>();
+        List<String> currentBatchIsins = new ArrayList<>();
+
+        for (String isin : isins) {
+            String instrumentKey = instrumentService.getInstrumentKeyByIsin(isin);
+            if (instrumentKey != null) {
+                isinToInstrumentKey.put(instrumentKey, isin); // For reverse lookup
+                currentBatchKeys.add(instrumentKey);
+                currentBatchIsins.add(isin);
+
+                if (currentBatchKeys.size() == 30) {
+                    processBatch(currentBatchIsins, currentBatchKeys, isinToInstrumentKey);
+                    currentBatchKeys.clear();
+                    currentBatchIsins.clear();
+                }
+            } else {
+                // If no key, just load archive if exists
+                result.put(isin, archiveService.loadArchive(isin));
             }
         }
 
-        // Return latest first
-        archivedArticles.sort((a, b) -> Long.compare(b.getPublishedTime(), a.getPublishedTime()));
-        return archivedArticles;
+        // Process remainder
+        if (!currentBatchKeys.isEmpty()) {
+            processBatch(currentBatchIsins, currentBatchKeys, isinToInstrumentKey);
+        }
+
+        // Collect all from archives after batches are processed and appended
+        for (String isin : isins) {
+            List<NewsArticle> archivedArticles = archiveService.loadArchive(isin);
+            archivedArticles.sort((a, b) -> Long.compare(b.getPublishedTime(), a.getPublishedTime()));
+            result.put(isin, archivedArticles);
+        }
+
+        return result;
+    }
+
+    private void processBatch(List<String> isins, List<String> instrumentKeys, Map<String, String> isinToInstrumentKey) {
+        String keysCsv = String.join(",", instrumentKeys);
+        List<NewsArticle> fetchedArticles = newsClient.fetchNews("instrument_keys", null, keysCsv);
+
+        // Group fetched by ISIN
+        Map<String, List<NewsArticle>> groupedByIsin = new HashMap<>();
+        for (NewsArticle article : fetchedArticles) {
+            String isin = isinToInstrumentKey.get(article.getInstrumentKey());
+            if (isin != null) {
+                article.setIsin(isin);
+                groupedByIsin.computeIfAbsent(isin, k -> new ArrayList<>()).add(article);
+            }
+        }
+
+        // Append to individual archives
+        for (Map.Entry<String, List<NewsArticle>> entry : groupedByIsin.entrySet()) {
+            archiveService.appendNewArticles(entry.getKey(), entry.getValue());
+        }
     }
 }
 ```
@@ -717,6 +767,7 @@ public class InstrumentService {
 // File: src/main/java/com/vega/news/service/NewsInstrumentArchiveService.java
 package com.vega.news.service;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.vega.news.config.NewsProperties;
 import com.vega.news.model.NewsArticle;
@@ -795,8 +846,10 @@ public class NewsInstrumentArchiveService {
             try (BufferedReader reader = Files.newBufferedReader(archivePath)) {
                 String line;
                 while ((line = reader.readLine()) != null) {
-                    NewsArticle article = objectMapper.readValue(line, NewsArticle.class);
-                    hashes.add(article.getSourceHash());
+                    JsonNode node = objectMapper.readTree(line);
+                    if (node.has("sourceHash")) {
+                        hashes.add(node.get("sourceHash").asText());
+                    }
                 }
             } catch (IOException e) {
                 log.error("Failed to read existing hashes for ISIN: {}", isin, e);
@@ -917,13 +970,7 @@ public class PortfolioNewsBuilderService {
             return;
         }
 
-        List<List<NewsArticle>> allArchives = new ArrayList<>();
-
-        for (String isin : isins) {
-            // This fetches new articles from Upstox if any, appends to archive, and returns the sorted archive
-            List<NewsArticle> articles = instrumentNewsService.getInstrumentNews(isin);
-            allArchives.add(articles);
-        }
+        List<List<NewsArticle>> allArchives = new ArrayList<>(instrumentNewsService.getNewsForIsins(isins).values());
 
         List<NewsArticle> mergedNews = mergeService.mergeArchives(allArchives);
 
@@ -1005,12 +1052,18 @@ public class PortfolioReaderService {
             while ((line = reader.readLine()) != null) {
                 try {
                     JsonNode node = objectMapper.readTree(line);
-                    int quantity = node.path("quantity").asInt(0);
-                    String instrumentToken = node.path("instrument_token").asText("");
-                    
-                    if (quantity > 0 && instrumentToken.contains("_EQ|")) {
-                        if (node.has("isin")) {
-                            isins.add(node.get("isin").asText());
+                    JsonNode dataArray = node.path("data");
+                    if (dataArray.isArray()) {
+                        for (JsonNode position : dataArray) {
+                            int quantity = position.path("quantity").asInt(0);
+                            String instrumentToken = position.path("instrument_token").asText("");
+                            
+                            if (quantity > 0 && instrumentToken.contains("_EQ|")) {
+                                String[] parts = instrumentToken.split("\\|");
+                                if (parts.length == 2) {
+                                    isins.add(parts[1]);
+                                }
+                            }
                         }
                     }
                 } catch (Exception e) {
