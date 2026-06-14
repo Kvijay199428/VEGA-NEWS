@@ -9,7 +9,7 @@ logging:
 upstox:
   instrument-path: data/instruments/upstox/upstox.json
   auth:
-    credential-file: auth/upstox/credentials.json
+    file: auth/upstox/auth.upstox.json
 
 news:
   refresh:

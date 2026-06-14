@@ -2,7 +2,7 @@ package com.vega.news.client;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.vega.news.config.UpstoxCredentialManager;
+import com.vega.news.config.AnalyticAccountTokenProvider;
 import com.vega.news.model.NewsArticle;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -23,13 +23,13 @@ import java.nio.charset.StandardCharsets;
 public class UpstoxNewsClient {
 
     private final HttpClient httpClient;
-    private final UpstoxCredentialManager credentialManager;
+    private final AnalyticAccountTokenProvider tokenProvider;
     private final ObjectMapper objectMapper;
 
     private static final String UPSTOX_API_URL = "https://api.upstox.com/v2/news";
 
     public List<NewsArticle> fetchNews(String category, String isin, String instrumentKey) {
-        String token = credentialManager.getAccessToken();
+        String token = tokenProvider.getAccessToken();
         if (token == null) {
             log.error("No valid Upstox token available");
             return new ArrayList<>();
