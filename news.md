@@ -91,7 +91,7 @@ package com.vega.news.client;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.vega.news.config.UpstoxCredentialManager;
+import com.vega.news.config.AnalyticAccountTokenProvider;
 import com.vega.news.model.NewsArticle;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -112,13 +112,13 @@ import java.nio.charset.StandardCharsets;
 public class UpstoxNewsClient {
 
     private final HttpClient httpClient;
-    private final UpstoxCredentialManager credentialManager;
+    private final AnalyticAccountTokenProvider tokenProvider;
     private final ObjectMapper objectMapper;
 
     private static final String UPSTOX_API_URL = "https://api.upstox.com/v2/news";
 
     public List<NewsArticle> fetchNews(String category, String isin, String instrumentKey) {
-        String token = credentialManager.getAccessToken();
+        String token = tokenProvider.getAccessToken();
         if (token == null) {
             log.error("No valid Upstox token available");
             return new ArrayList<>();
@@ -216,6 +216,69 @@ public class UpstoxNewsClient {
 ```
 
 ```java
+// File: src/main/java/com/vega/news/config/AnalyticAccountTokenProvider.java
+package com.vega.news.config;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import jakarta.annotation.PostConstruct;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.stereotype.Component;
+
+import java.io.File;
+
+@Component
+@Slf4j
+public class AnalyticAccountTokenProvider {
+
+    @Value("${upstox.auth.file}")
+    private String authFile;
+
+    private String accessToken;
+
+    private final ObjectMapper objectMapper = new ObjectMapper();
+
+    @PostConstruct
+    public void init() {
+        load();
+    }
+
+    private void load() {
+        try {
+            File file = new File(authFile);
+            if (!file.exists()) {
+                throw new IllegalStateException("Auth file not found at: " + authFile);
+            }
+
+            JsonNode root = objectMapper.readTree(file);
+
+            JsonNode analytic = root.path("accounts").path("analytic");
+
+            if (analytic.isMissingNode()) {
+                throw new IllegalStateException("accounts.analytic not found in auth file");
+            }
+
+            accessToken = analytic.path("accessToken").asText();
+
+            if (accessToken == null || accessToken.isBlank()) {
+                throw new IllegalStateException("analytic accessToken missing or empty");
+            }
+
+            log.info("Loaded analytic access token successfully");
+
+        } catch (Exception ex) {
+            throw new RuntimeException("Failed loading " + authFile, ex);
+        }
+    }
+
+    public String getAccessToken() {
+        return accessToken;
+    }
+}
+```
+
+```java
 // File: src/main/java/com/vega/news/config/AsyncConfig.java
 package com.vega.news.config;
 
@@ -305,73 +368,6 @@ public class NewsProperties {
         public void setHoldingsView(String holdingsView) { this.holdingsView = holdingsView; }
         public String getPositionsView() { return positionsView; }
         public void setPositionsView(String positionsView) { this.positionsView = positionsView; }
-    }
-}
-```
-
-```java
-// File: src/main/java/com/vega/news/config/UpstoxCredentialManager.java
-package com.vega.news.config;
-
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import jakarta.annotation.PostConstruct;
-import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.stereotype.Component;
-
-import java.io.File;
-import java.io.IOException;
-
-@Component
-@Slf4j
-public class UpstoxCredentialManager {
-
-    @Value("${upstox.auth.credential-file}")
-    private String envPath;
-
-    private String accessToken;
-
-    private final ObjectMapper objectMapper = new ObjectMapper();
-
-    @PostConstruct
-    public void init() {
-        loadCredentials();
-    }
-
-    public synchronized void loadCredentials() {
-        try {
-            File file = new File(envPath);
-            if (!file.exists()) {
-                log.error("Upstox credentials file not found at: {}", envPath);
-                return;
-            }
-
-            JsonNode root = objectMapper.readTree(file);
-            JsonNode accounts = root.path("accounts");
-            
-            // Try to find the first account with an accessToken
-            if (accounts.isObject()) {
-                accounts.fields().forEachRemaining(entry -> {
-                    JsonNode account = entry.getValue();
-                    if (account.has("accessToken")) {
-                        this.accessToken = account.get("accessToken").asText();
-                    }
-                });
-            }
-
-            if (this.accessToken == null || this.accessToken.isEmpty()) {
-                log.error("No access token found in Upstox credentials file.");
-            } else {
-                log.info("Upstox access token loaded successfully.");
-            }
-        } catch (IOException e) {
-            log.error("Failed to load Upstox credentials: {}", e.getMessage());
-        }
-    }
-
-    public String getAccessToken() {
-        return accessToken;
     }
 }
 ```
@@ -1135,7 +1131,7 @@ logging:
 upstox:
   instrument-path: data/instruments/upstox/upstox.json
   auth:
-    credential-file: auth/upstox/credentials.json
+    file: auth/upstox/auth.upstox.json
 
 news:
   refresh:
