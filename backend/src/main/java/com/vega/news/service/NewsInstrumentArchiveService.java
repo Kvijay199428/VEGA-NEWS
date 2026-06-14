@@ -1,5 +1,6 @@
 package com.vega.news.service;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.vega.news.config.NewsProperties;
 import com.vega.news.model.NewsArticle;
@@ -78,8 +79,10 @@ public class NewsInstrumentArchiveService {
             try (BufferedReader reader = Files.newBufferedReader(archivePath)) {
                 String line;
                 while ((line = reader.readLine()) != null) {
-                    NewsArticle article = objectMapper.readValue(line, NewsArticle.class);
-                    hashes.add(article.getSourceHash());
+                    JsonNode node = objectMapper.readTree(line);
+                    if (node.has("sourceHash")) {
+                        hashes.add(node.get("sourceHash").asText());
+                    }
                 }
             } catch (IOException e) {
                 log.error("Failed to read existing hashes for ISIN: {}", isin, e);

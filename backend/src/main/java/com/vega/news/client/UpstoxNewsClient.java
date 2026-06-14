@@ -74,28 +74,33 @@ public class UpstoxNewsClient {
         JsonNode data = root.path("data");
         List<NewsArticle> articles = new ArrayList<>();
 
-        if (data.isArray()) {
-            for (JsonNode item : data) {
-                String heading = item.path("heading").asText("");
-                String summary = item.path("summary").asText("");
-                String articleLink = item.path("article_link").asText("");
-                long publishedTime = item.path("published_time").asLong(System.currentTimeMillis());
-                
-                String sourceHash = generateSourceHash(heading, articleLink, publishedTime);
+        if (data.isObject()) {
+            data.fields().forEachRemaining(entry -> {
+                JsonNode items = entry.getValue();
+                if (items.isArray()) {
+                    for (JsonNode item : items) {
+                        String heading = item.path("heading").asText("");
+                        String summary = item.path("summary").asText("");
+                        String articleLink = item.path("article_link").asText("");
+                        long publishedTime = item.path("published_time").asLong(System.currentTimeMillis());
+                        
+                        String sourceHash = generateSourceHash(heading, articleLink, publishedTime);
 
-                NewsArticle article = NewsArticle.builder()
-                        .isin(isin)
-                        .instrumentKey(instrumentKey)
-                        .heading(heading)
-                        .summary(summary)
-                        .thumbnail(item.path("thumbnail").asText(""))
-                        .articleLink(articleLink)
-                        .publishedTime(publishedTime)
-                        .sourceHash(sourceHash)
-                        .build();
+                        NewsArticle article = NewsArticle.builder()
+                                .isin(isin)
+                                .instrumentKey(instrumentKey)
+                                .heading(heading)
+                                .summary(summary)
+                                .thumbnail(item.path("thumbnail").asText(""))
+                                .articleLink(articleLink)
+                                .publishedTime(publishedTime)
+                                .sourceHash(sourceHash)
+                                .build();
 
-                articles.add(article);
-            }
+                        articles.add(article);
+                    }
+                }
+            });
         }
         return articles;
     }

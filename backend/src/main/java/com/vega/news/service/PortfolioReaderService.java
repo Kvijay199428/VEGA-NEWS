@@ -58,12 +58,18 @@ public class PortfolioReaderService {
             while ((line = reader.readLine()) != null) {
                 try {
                     JsonNode node = objectMapper.readTree(line);
-                    int quantity = node.path("quantity").asInt(0);
-                    String instrumentToken = node.path("instrument_token").asText("");
-                    
-                    if (quantity > 0 && instrumentToken.contains("_EQ|")) {
-                        if (node.has("isin")) {
-                            isins.add(node.get("isin").asText());
+                    JsonNode dataArray = node.path("data");
+                    if (dataArray.isArray()) {
+                        for (JsonNode position : dataArray) {
+                            int quantity = position.path("quantity").asInt(0);
+                            String instrumentToken = position.path("instrument_token").asText("");
+                            
+                            if (quantity > 0 && instrumentToken.contains("_EQ|")) {
+                                String[] parts = instrumentToken.split("\\|");
+                                if (parts.length == 2) {
+                                    isins.add(parts[1]);
+                                }
+                            }
                         }
                     }
                 } catch (Exception e) {

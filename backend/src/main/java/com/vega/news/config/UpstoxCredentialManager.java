@@ -14,7 +14,7 @@ import java.io.IOException;
 @Slf4j
 public class UpstoxCredentialManager {
 
-    @Value("${upstox.env-path}")
+    @Value("${upstox.auth.credential-file}")
     private String envPath;
 
     private String accessToken;

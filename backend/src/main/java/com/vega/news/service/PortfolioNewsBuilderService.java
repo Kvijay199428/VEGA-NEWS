@@ -47,13 +47,7 @@ public class PortfolioNewsBuilderService {
             return;
         }
 
-        List<List<NewsArticle>> allArchives = new ArrayList<>();
-
-        for (String isin : isins) {
-            // This fetches new articles from Upstox if any, appends to archive, and returns the sorted archive
-            List<NewsArticle> articles = instrumentNewsService.getInstrumentNews(isin);
-            allArchives.add(articles);
-        }
+        List<List<NewsArticle>> allArchives = new ArrayList<>(instrumentNewsService.getNewsForIsins(isins).values());
 
         List<NewsArticle> mergedNews = mergeService.mergeArchives(allArchives);
 

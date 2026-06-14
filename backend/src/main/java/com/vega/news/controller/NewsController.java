@@ -27,8 +27,8 @@ public class NewsController {
 
     @GetMapping("/instrument/{isin}")
     public ResponseEntity<List<NewsArticle>> getInstrumentNews(@PathVariable String isin) {
-        List<NewsArticle> articles = instrumentNewsService.getInstrumentNews(isin);
-        return ResponseEntity.ok(articles);
+        List<NewsArticle> articles = instrumentNewsService.getNewsForIsins(java.util.Collections.singleton(isin)).get(isin);
+        return ResponseEntity.ok(articles != null ? articles : java.util.Collections.emptyList());
     }
 
     @GetMapping(value = "/holdings", produces = MediaType.APPLICATION_JSON_VALUE)

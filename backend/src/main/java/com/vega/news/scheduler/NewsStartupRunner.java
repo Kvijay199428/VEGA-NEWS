@@ -15,9 +15,7 @@ public class NewsStartupRunner implements CommandLineRunner {
 
     @Override
     public void run(String... args) {
-        log.info("Vega News Application started. Initializing views...");
-        builderService.buildHoldingsView();
-        builderService.buildPositionsView();
-        log.info("Initialization complete.");
+        log.info("Vega News Application started.");
+        log.info("Initialization complete. Scheduled tasks will handle news view generation shortly.");
     }
 }
