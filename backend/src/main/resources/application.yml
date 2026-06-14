@@ -7,9 +7,9 @@ logging:
     com.vega.news: INFO
 
 upstox:
-  instrument-path: data/instruments/upstox/upstox.json
+  instrument-path: /root/news/data/instruments/upstox/upstox.json
   auth:
-    file: auth/upstox/auth.upstox.json
+    file: /root/news/auth/upstox/auth.upstox.json
 
 news:
   refresh:
@@ -19,6 +19,6 @@ news:
   upstox:
     page-size: 100
   storage:
-    root: storage/news
-    holdings-view: storage/news/holdings.jsonl
-    positions-view: storage/news/positions.jsonl
+    root: /root/news/storage/news
+    holdings-view: /root/news/storage/news/holdings.jsonl
+    positions-view: /root/news/storage/news/positions.jsonl

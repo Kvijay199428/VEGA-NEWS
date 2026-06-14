@@ -37,7 +37,12 @@ public class UpstoxNewsClient {
 
         String url = UPSTOX_API_URL + "?category=" + category;
         if ("instrument_keys".equals(category) && instrumentKey != null) {
-            url += "&instrument_keys=" + instrumentKey;
+            try {
+                String encodedKey = java.net.URLEncoder.encode(instrumentKey, StandardCharsets.UTF_8.toString());
+                url += "&instrument_keys=" + encodedKey;
+            } catch (Exception e) {
+                log.error("Failed to encode instrument_keys", e);
+            }
         }
 
         HttpRequest request = HttpRequest.newBuilder()

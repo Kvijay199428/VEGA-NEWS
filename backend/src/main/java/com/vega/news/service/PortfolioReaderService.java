@@ -6,8 +6,6 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
-import java.io.BufferedReader;
-import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -23,61 +21,54 @@ public class PortfolioReaderService {
 
     public Set<String> readHoldingsIsins() {
         Set<String> isins = new HashSet<>();
-        Path holdingsPath = Paths.get("storage/user/holdings/holdings.jsonl");
+        Path holdingsPath = Paths.get("/root/news/storage/user/holdings/holdings.jsonl");
         if (!Files.exists(holdingsPath)) {
             return isins;
         }
 
-        try (BufferedReader reader = Files.newBufferedReader(holdingsPath)) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                try {
-                    JsonNode node = objectMapper.readTree(line);
-                    if (node.has("isin")) {
-                        isins.add(node.get("isin").asText());
+        try {
+            String content = Files.readString(holdingsPath);
+            JsonNode node = objectMapper.readTree(content);
+            JsonNode dataArray = node.path("data");
+            if (dataArray.isArray()) {
+                for (JsonNode holding : dataArray) {
+                    if (holding.has("isin")) {
+                        isins.add(holding.path("isin").asText());
                     }
-                } catch (Exception e) {
-                    log.warn("Failed to parse holding line", e);
                 }
             }
-        } catch (IOException e) {
-            log.error("Failed to read holdings", e);
+        } catch (Exception e) {
+            log.error("Failed to read/parse holdings", e);
         }
         return isins;
     }
 
     public Set<String> readPositionsIsins() {
         Set<String> isins = new HashSet<>();
-        Path positionsPath = Paths.get("storage/user/positions/positions.jsonl");
+        Path positionsPath = Paths.get("/root/news/storage/user/positions/positions.jsonl");
         if (!Files.exists(positionsPath)) {
             return isins;
         }
 
-        try (BufferedReader reader = Files.newBufferedReader(positionsPath)) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                try {
-                    JsonNode node = objectMapper.readTree(line);
-                    JsonNode dataArray = node.path("data");
-                    if (dataArray.isArray()) {
-                        for (JsonNode position : dataArray) {
-                            int quantity = position.path("quantity").asInt(0);
-                            String instrumentToken = position.path("instrument_token").asText("");
-                            
-                            if (quantity > 0 && instrumentToken.contains("_EQ|")) {
-                                String[] parts = instrumentToken.split("\\|");
-                                if (parts.length == 2) {
-                                    isins.add(parts[1]);
-                                }
-                            }
+        try {
+            String content = Files.readString(positionsPath);
+            JsonNode node = objectMapper.readTree(content);
+            JsonNode dataArray = node.path("data");
+            if (dataArray.isArray()) {
+                for (JsonNode position : dataArray) {
+                    int quantity = position.path("quantity").asInt(0);
+                    String instrumentToken = position.path("instrument_token").asText("");
+                    
+                    if (quantity > 0 && instrumentToken.contains("_EQ|")) {
+                        String[] parts = instrumentToken.split("\\|");
+                        if (parts.length == 2) {
+                            isins.add(parts[1]);
                         }
                     }
-                } catch (Exception e) {
-                    log.warn("Failed to parse position line", e);
                 }
             }
-        } catch (IOException e) {
-            log.error("Failed to read positions", e);
+        } catch (Exception e) {
+            log.error("Failed to read/parse positions", e);
         }
         return isins;
     }
