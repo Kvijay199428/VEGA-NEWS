@@ -1,0 +1,24 @@
+spring:
+  application:
+    name: vega.news
+
+logging:
+  level:
+    com.vega.news: INFO
+
+upstox:
+  instrument-path: data/instruments/upstox/upstox.json
+  auth:
+    credential-file: auth/upstox/credentials.json
+
+news:
+  refresh:
+    interval: 15m
+  retention:
+    days: 3650
+  upstox:
+    page-size: 100
+  storage:
+    root: storage/news
+    holdings-view: storage/news/holdings.jsonl
+    positions-view: storage/news/positions.jsonl

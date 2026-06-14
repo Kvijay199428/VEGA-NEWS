@@ -1,0 +1,27 @@
+# Security: Secrets and Credentials
+auth/
+credentials.json
+*.pem
+*.key
+.env
+
+# Build outputs
+backend/target/
+*.jar
+*.class
+*.war
+*.ear
+
+# Logs
+logs/
+*.log
+
+# Data and Storage (Local state)
+data/
+storage/
+
+# IDE and OS
+.idea/
+.vscode/
+*.iml
+.DS_Store
