@@ -1,9 +1,9 @@
 package com.vega.news.controller;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.vega.news.config.NewsProperties;
 import com.vega.news.model.NewsArticle;
 import com.vega.news.model.NewsErrorResponse;
+import com.vega.news.service.InstrumentService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.core.io.FileSystemResource;
@@ -15,7 +15,9 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.io.File;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 @Slf4j
 @RestController
@@ -24,6 +26,34 @@ import java.util.List;
 public class NewsController {
 
     private final NewsProperties properties;
+    private final InstrumentService instrumentService;
+
+    @GetMapping("/diagnostics")
+    public ResponseEntity<Map<String, Object>> getDiagnostics() {
+        Map<String, Object> stats = new HashMap<>();
+        
+        File storageRoot = new File(properties.getStorage().getRoot());
+        File metadataDir = new File(storageRoot, "metadata");
+        File instrumentsDir = new File(storageRoot, "instruments");
+        
+        long metadataCount = countFiles(metadataDir, ".json");
+        long archiveCount = countFiles(instrumentsDir, ".jsonl");
+        int expectedFno = instrumentService.getFnoInstrumentCount();
+        
+        stats.put("fnoInstruments", expectedFno);
+        stats.put("archives", archiveCount);
+        stats.put("metadata", metadataCount);
+        stats.put("missingArchives", Math.max(0, expectedFno - archiveCount));
+        stats.put("storageRoot", storageRoot.getAbsolutePath());
+        
+        return ResponseEntity.ok(stats);
+    }
+
+    private long countFiles(File dir, String extension) {
+        if (dir == null || !dir.exists() || !dir.isDirectory()) return 0;
+        File[] files = dir.listFiles((d, name) -> name.endsWith(extension));
+        return files != null ? files.length : 0;
+    }
 
     @GetMapping(value = "/instrument/{isin}", produces = MediaType.APPLICATION_JSON_VALUE)
     public ResponseEntity<?> getInstrumentNews(@PathVariable String isin) {

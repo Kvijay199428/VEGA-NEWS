@@ -91,6 +91,10 @@ public class InstrumentService {
         return Collections.unmodifiableMap(fnoEquities);
     }
 
+    public int getFnoInstrumentCount() {
+        return fnoEquities.size();
+    }
+
     public InstrumentInfo getInstrument(String isin) {
         return isinMap.get(isin);
     }

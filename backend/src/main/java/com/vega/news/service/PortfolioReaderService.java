@@ -2,6 +2,7 @@ package com.vega.news.service;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.vega.news.config.NewsProperties;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -18,11 +19,13 @@ import java.util.Set;
 public class PortfolioReaderService {
 
     private final ObjectMapper objectMapper;
+    private final NewsProperties properties;
 
     public Set<String> readHoldingsIsins() {
         Set<String> isins = new HashSet<>();
-        Path holdingsPath = Paths.get("/root/news/storage/user/holdings/holdings.jsonl");
+        Path holdingsPath = Paths.get(properties.getVegaRoot(), "storage/user/holdings/holdings.jsonl");
         if (!Files.exists(holdingsPath)) {
+            log.warn("Holdings raw file missing at: {}", holdingsPath);
             return isins;
         }
 
@@ -45,8 +48,9 @@ public class PortfolioReaderService {
 
     public Set<String> readPositionsIsins() {
         Set<String> isins = new HashSet<>();
-        Path positionsPath = Paths.get("/root/news/storage/user/positions/positions.jsonl");
+        Path positionsPath = Paths.get(properties.getVegaRoot(), "storage/user/positions/positions.jsonl");
         if (!Files.exists(positionsPath)) {
+            log.warn("Positions raw file missing at: {}", positionsPath);
             return isins;
         }
 

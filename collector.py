@@ -179,24 +179,32 @@ class NewsCollector:
             json.dump(list(isins), f)
 
     def should_fetch_fno(self, isin):
+        # Rule 1: Archive missing -> collect
         archive_file = STORAGE_DIR / "instruments" / f"{isin}.jsonl"
         if not archive_file.exists():
             return True
             
+        # Rule 2: Metadata missing -> collect
         meta_file = STORAGE_DIR / "metadata" / f"{isin}.json"
         if not meta_file.exists():
             return True
+            
         try:
             with open(meta_file, "r") as f:
                 meta = json.load(f)
                 last_fetch_str = meta.get("last_fetch")
+                # Rule 3: No last_fetch in metadata -> collect
                 if not last_fetch_str:
                     return True
+                
+                # Rule 4: Refresh expired -> collect
                 last_fetch = datetime.fromisoformat(last_fetch_str.replace("Z", "+00:00"))
                 if datetime.now(timezone.utc) - last_fetch > timedelta(hours=FETCH_INTERVAL_HOURS):
                     return True
         except Exception:
             return True
+            
+        # Otherwise skip
         return False
 
     def generate_hash(self, article):
@@ -324,6 +332,16 @@ class NewsCollector:
     def run(self):
         logger.info("=== Starting News Collection ===")
         
+        # 0. Collector Audit
+        fno_count = len(self.fno_equities)
+        present_archives = 0
+        for isin in self.fno_equities:
+            if (STORAGE_DIR / "instruments" / f"{isin}.jsonl").exists():
+                present_archives += 1
+        
+        missing_archives = fno_count - present_archives
+        logger.info(f"Audit: F&O instruments={fno_count}, Archives present={present_archives}, Missing archives={missing_archives}")
+
         # 1. Detect Portfolio Changes
         holdings, positions = self.read_portfolio()
         old_holdings = self.load_snapshot("holdings")

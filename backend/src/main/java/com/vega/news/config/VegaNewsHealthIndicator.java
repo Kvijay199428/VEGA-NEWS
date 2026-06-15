@@ -30,20 +30,33 @@ public class VegaNewsHealthIndicator implements HealthIndicator {
 
         File metadataDir = new File(storageRoot, "metadata");
         boolean metadataExists = metadataDir.exists() && metadataDir.isDirectory();
+        long metadataCount = metadataExists ? countFiles(metadataDir, ".json") : 0;
 
         File instrumentsDir = new File(storageRoot, "instruments");
         boolean instrumentsExists = instrumentsDir.exists() && instrumentsDir.isDirectory();
+        long archiveCount = instrumentsExists ? countFiles(instrumentsDir, ".jsonl") : 0;
 
-        boolean allHealthy = instrumentLoaded && storageReachable && holdingsExists && positionsExists && metadataExists && instrumentsExists;
+        int expectedFno = instrumentService.getFnoInstrumentCount();
+
+        // Health is UP if core infrastructure is ready, even if collector hasn't run yet.
+        boolean allHealthy = instrumentLoaded && storageReachable && metadataExists && instrumentsExists;
 
         Health.Builder builder = allHealthy ? Health.up() : Health.down();
         return builder
                 .withDetail("instrumentsLoaded", instrumentLoaded)
                 .withDetail("storageReachable", storageReachable)
+                .withDetail("metadataDirExists", metadataExists)
+                .withDetail("metadataCount", metadataCount)
+                .withDetail("instrumentsDirExists", instrumentsExists)
+                .withDetail("archiveCount", archiveCount)
+                .withDetail("expectedFno", expectedFno)
                 .withDetail("holdingsExists", holdingsExists)
                 .withDetail("positionsExists", positionsExists)
-                .withDetail("metadataExists", metadataExists)
-                .withDetail("instrumentsDirExists", instrumentsExists)
                 .build();
+    }
+
+    private long countFiles(File dir, String extension) {
+        File[] files = dir.listFiles((d, name) -> name.endsWith(extension));
+        return files != null ? files.length : 0;
     }
 }
