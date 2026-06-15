@@ -7,11 +7,12 @@ logging:
     com.vega.news: INFO
 
 upstox:
-  instrument-path: /root/news/data/instruments/upstox/upstox.json
+  instrument-path: ${news.vega-root}/data/instruments/upstox/upstox.json
   auth:
-    file: /root/news/auth/upstox/auth.upstox.json
+    file: ${news.vega-root}/auth/upstox/auth.upstox.json
 
 news:
+  vega-root: /root/news
   refresh:
     interval: 15m
   retention:
@@ -19,6 +20,6 @@ news:
   upstox:
     page-size: 100
   storage:
-    root: /root/news/storage/news
-    holdings-view: /root/news/storage/news/holdings.jsonl
-    positions-view: /root/news/storage/news/positions.jsonl
+    root: ${news.vega-root}/storage/news
+    holdings-view: ${news.vega-root}/storage/news/holdings.jsonl
+    positions-view: ${news.vega-root}/storage/news/positions.jsonl

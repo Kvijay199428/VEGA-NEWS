@@ -22,8 +22,19 @@ public class InstrumentNewsService {
     private final NewsInstrumentArchiveService archiveService;
     private final InstrumentService instrumentService;
 
-    public Map<String, List<NewsArticle>> getNewsForIsins(Set<String> isins) {
+    public Map<String, List<NewsArticle>> getArchivedNews(Set<String> isins) {
         Map<String, List<NewsArticle>> result = new HashMap<>();
+        for (String isin : isins) {
+            List<NewsArticle> archivedArticles = archiveService.loadArchive(isin);
+            archivedArticles.sort((a, b) -> Long.compare(b.getPublishedTime(), a.getPublishedTime()));
+            result.put(isin, archivedArticles);
+        }
+        return result;
+    }
+
+    public void refreshNews(Set<String> isins) {
+        if (isins.isEmpty()) return;
+        
         Map<String, String> isinToInstrumentKey = new HashMap<>();
 
         // Group into batches of 30
@@ -33,7 +44,7 @@ public class InstrumentNewsService {
         for (String isin : isins) {
             String instrumentKey = instrumentService.getInstrumentKeyByIsin(isin);
             if (instrumentKey != null) {
-                isinToInstrumentKey.put(instrumentKey, isin); // For reverse lookup
+                isinToInstrumentKey.put(instrumentKey, isin);
                 currentBatchKeys.add(instrumentKey);
                 currentBatchIsins.add(isin);
 
@@ -42,9 +53,6 @@ public class InstrumentNewsService {
                     currentBatchKeys.clear();
                     currentBatchIsins.clear();
                 }
-            } else {
-                // If no key, just load archive if exists
-                result.put(isin, archiveService.loadArchive(isin));
             }
         }
 
@@ -52,15 +60,6 @@ public class InstrumentNewsService {
         if (!currentBatchKeys.isEmpty()) {
             processBatch(currentBatchIsins, currentBatchKeys, isinToInstrumentKey);
         }
-
-        // Collect all from archives after batches are processed and appended
-        for (String isin : isins) {
-            List<NewsArticle> archivedArticles = archiveService.loadArchive(isin);
-            archivedArticles.sort((a, b) -> Long.compare(b.getPublishedTime(), a.getPublishedTime()));
-            result.put(isin, archivedArticles);
-        }
-
-        return result;
     }
 
     private void processBatch(List<String> isins, List<String> instrumentKeys, Map<String, String> isinToInstrumentKey) {

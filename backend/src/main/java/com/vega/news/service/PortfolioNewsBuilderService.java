@@ -24,21 +24,49 @@ public class PortfolioNewsBuilderService {
 
     private final PortfolioReaderService readerService;
     private final InstrumentNewsService instrumentNewsService;
-    private final NewsInstrumentArchiveService archiveService;
     private final NewsMergeService mergeService;
     private final ObjectMapper objectMapper;
     private final NewsProperties properties;
+    private final PortfolioSnapshotService snapshotService;
 
     public void buildHoldingsView() {
         log.info("Building Holdings News View...");
-        Set<String> isins = readerService.readHoldingsIsins();
-        buildView(isins, Paths.get(properties.getStorage().getHoldingsView()));
+        Set<String> currentIsins = readerService.readHoldingsIsins();
+        Set<String> previousIsins = snapshotService.loadSnapshot("holdings");
+
+        // Detect changes
+        java.util.Set<String> addedIsins = new java.util.HashSet<>(currentIsins);
+        addedIsins.removeAll(previousIsins);
+
+        if (!addedIsins.isEmpty()) {
+            log.info("Detected {} new ISINs in holdings. Refreshing news for them.", addedIsins.size());
+            instrumentNewsService.refreshNews(addedIsins);
+        } else {
+            log.info("No new ISINs detected in holdings. Skipping API fetch.");
+        }
+
+        buildView(currentIsins, Paths.get(properties.getStorage().getHoldingsView()));
+        snapshotService.saveSnapshot("holdings", currentIsins);
     }
 
     public void buildPositionsView() {
         log.info("Building Positions News View...");
-        Set<String> isins = readerService.readPositionsIsins();
-        buildView(isins, Paths.get(properties.getStorage().getPositionsView()));
+        Set<String> currentIsins = readerService.readPositionsIsins();
+        Set<String> previousIsins = snapshotService.loadSnapshot("positions");
+
+        // Detect changes
+        java.util.Set<String> addedIsins = new java.util.HashSet<>(currentIsins);
+        addedIsins.removeAll(previousIsins);
+
+        if (!addedIsins.isEmpty()) {
+            log.info("Detected {} new ISINs in positions. Refreshing news for them.", addedIsins.size());
+            instrumentNewsService.refreshNews(addedIsins);
+        } else {
+            log.info("No new ISINs detected in positions. Skipping API fetch.");
+        }
+
+        buildView(currentIsins, Paths.get(properties.getStorage().getPositionsView()));
+        snapshotService.saveSnapshot("positions", currentIsins);
     }
 
     private void buildView(Set<String> isins, Path outputPath) {
@@ -47,7 +75,7 @@ public class PortfolioNewsBuilderService {
             return;
         }
 
-        List<List<NewsArticle>> allArchives = new ArrayList<>(instrumentNewsService.getNewsForIsins(isins).values());
+        List<List<NewsArticle>> allArchives = new ArrayList<>(instrumentNewsService.getArchivedNews(isins).values());
 
         List<NewsArticle> mergedNews = mergeService.mergeArchives(allArchives);
 

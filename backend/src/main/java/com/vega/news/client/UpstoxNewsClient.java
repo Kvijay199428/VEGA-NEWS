@@ -12,10 +12,14 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.security.MessageDigest;
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
+import java.util.HashSet;
+import java.util.Set;
 
 @Slf4j
 @Component
@@ -27,6 +31,7 @@ public class UpstoxNewsClient {
     private final ObjectMapper objectMapper;
 
     private static final String UPSTOX_API_URL = "https://api.upstox.com/v2/news";
+    private static final Set<Integer> RETRYABLE_STATUS_CODES = new HashSet<>(Arrays.asList(429, 500, 502, 503, 504));
 
     public List<NewsArticle> fetchNews(String category, String isin, String instrumentKey) {
         String token = tokenProvider.getAccessToken();
@@ -36,8 +41,10 @@ public class UpstoxNewsClient {
         }
 
         String url = UPSTOX_API_URL + "?category=" + category;
+        int keyCount = 0;
         if ("instrument_keys".equals(category) && instrumentKey != null) {
             try {
+                keyCount = instrumentKey.split(",").length;
                 String encodedKey = java.net.URLEncoder.encode(instrumentKey, StandardCharsets.UTF_8.toString());
                 url += "&instrument_keys=" + encodedKey;
             } catch (Exception e) {
@@ -49,6 +56,7 @@ public class UpstoxNewsClient {
                 .uri(URI.create(url))
                 .header("Accept", "application/json")
                 .header("Authorization", "Bearer " + token)
+                .timeout(Duration.ofSeconds(30))
                 .GET()
                 .build();
 
@@ -58,29 +66,46 @@ public class UpstoxNewsClient {
             if (response.statusCode() == 200) {
                 return parseNewsResponse(response.body(), isin, instrumentKey);
             } else {
-                log.error("Failed to fetch news. Status: {}, Body: {}", response.statusCode(), response.body());
-                // Retry once as per strategy
-                log.info("Retrying fetch news once...");
-                response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-                if (response.statusCode() == 200) {
-                    return parseNewsResponse(response.body(), isin, instrumentKey);
+                log.error("Failed to fetch news. CATEGORY={}, KEYS={}, STATUS={}, Body={}", category, keyCount, response.statusCode(), response.body());
+                
+                if (RETRYABLE_STATUS_CODES.contains(response.statusCode())) {
+                    log.info("Retrying fetch news once due to retryable status {}...", response.statusCode());
+                    response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+                    if (response.statusCode() == 200) {
+                        return parseNewsResponse(response.body(), isin, instrumentKey);
+                    } else {
+                        log.error("Retry failed. CATEGORY={}, KEYS={}, STATUS={}, Body={}", category, keyCount, response.statusCode(), response.body());
+                    }
                 } else {
-                    log.error("Retry failed. Status: {}, Body: {}", response.statusCode(), response.body());
+                    log.warn("Non-retryable status {} received. Skipping retry.", response.statusCode());
                 }
             }
         } catch (Exception e) {
-            log.error("Exception while fetching news from Upstox", e);
+            log.error("Exception while fetching news from Upstox. CATEGORY={}, KEYS={}", category, keyCount, e);
         }
         return new ArrayList<>();
     }
 
     private List<NewsArticle> parseNewsResponse(String responseBody, String isin, String instrumentKey) throws Exception {
         JsonNode root = objectMapper.readTree(responseBody);
+        
+        // Basic schema validation
+        if (!root.has("status") || !"success".equals(root.path("status").asText())) {
+            log.error("Upstox API returned error or unexpected status. Response: {}", responseBody);
+            return new ArrayList<>();
+        }
+
         JsonNode data = root.path("data");
+        if (data.isMissingNode() || data.isNull()) {
+            log.error("Upstox API response missing data field. Response: {}", responseBody);
+            return new ArrayList<>();
+        }
+
         List<NewsArticle> articles = new ArrayList<>();
 
         if (data.isObject()) {
             data.fields().forEachRemaining(entry -> {
+                String responseInstrumentKey = entry.getKey();
                 JsonNode items = entry.getValue();
                 if (items.isArray()) {
                     for (JsonNode item : items) {
@@ -93,7 +118,7 @@ public class UpstoxNewsClient {
 
                         NewsArticle article = NewsArticle.builder()
                                 .isin(isin)
-                                .instrumentKey(instrumentKey)
+                                .instrumentKey(responseInstrumentKey)
                                 .heading(heading)
                                 .summary(summary)
                                 .thumbnail(item.path("thumbnail").asText(""))
@@ -106,6 +131,8 @@ public class UpstoxNewsClient {
                     }
                 }
             });
+        } else {
+            log.error("Schema mismatch: expected 'data' to be an object in Upstox news response. Response: {}", responseBody);
         }
         return articles;
     }

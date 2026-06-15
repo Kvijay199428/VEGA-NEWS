@@ -5,11 +5,14 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 @ConfigurationProperties(prefix = "news")
 public class NewsProperties {
 
+    private String vegaRoot = "/root/news";
     private final Refresh refresh = new Refresh();
     private final Retention retention = new Retention();
     private final Upstox upstox = new Upstox();
     private final Storage storage = new Storage();
 
+    public String getVegaRoot() { return vegaRoot; }
+    public void setVegaRoot(String vegaRoot) { this.vegaRoot = vegaRoot; }
     public Refresh getRefresh() { return refresh; }
     public Retention getRetention() { return retention; }
     public Upstox getUpstox() { return upstox; }
@@ -34,9 +37,9 @@ public class NewsProperties {
     }
 
     public static class Storage {
-        private String root = "storage/news";
-        private String holdingsView = "storage/news/holdings.jsonl";
-        private String positionsView = "storage/news/positions.jsonl";
+        private String root;
+        private String holdingsView;
+        private String positionsView;
 
         public String getRoot() { return root; }
         public void setRoot(String root) { this.root = root; }
