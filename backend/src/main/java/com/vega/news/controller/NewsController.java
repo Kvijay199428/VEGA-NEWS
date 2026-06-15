@@ -3,11 +3,13 @@ package com.vega.news.controller;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.vega.news.config.NewsProperties;
 import com.vega.news.model.NewsArticle;
+import com.vega.news.model.NewsErrorResponse;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.core.io.FileSystemResource;
 import org.springframework.core.io.Resource;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -24,16 +26,28 @@ public class NewsController {
     private final NewsProperties properties;
 
     @GetMapping(value = "/instrument/{isin}", produces = MediaType.APPLICATION_JSON_VALUE)
-    public ResponseEntity<Resource> getInstrumentNews(@PathVariable String isin) {
+    public ResponseEntity<?> getInstrumentNews(@PathVariable String isin) {
         log.info("Instrument news request received. ISIN={}", isin);
         
         if (isin == null || isin.trim().isEmpty() || !isin.matches("^[A-Z0-9]{12}$")) {
-            return ResponseEntity.badRequest().build();
+            return ResponseEntity.badRequest().body(NewsErrorResponse.builder()
+                    .status("error")
+                    .code("INVALID_ISIN")
+                    .isin(isin)
+                    .message("The provided ISIN is invalid.")
+                    .build());
         }
         
         File file = new File(properties.getStorage().getRoot() + "/instruments/" + isin + ".jsonl");
+        log.info("Archive lookup path={} exists={}", file.getAbsolutePath(), file.exists());
+
         if (!file.exists()) {
-            return ResponseEntity.notFound().build();
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(NewsErrorResponse.builder()
+                    .status("error")
+                    .code("ARCHIVE_NOT_FOUND")
+                    .isin(isin)
+                    .message("News archive not found for the requested ISIN.")
+                    .build());
         }
         
         log.info("Serving archive file {}", file.getAbsolutePath());
@@ -45,11 +59,17 @@ public class NewsController {
     }
 
     @GetMapping(value = "/holdings", produces = MediaType.APPLICATION_JSON_VALUE)
-    public ResponseEntity<Resource> getHoldingsNews() {
+    public ResponseEntity<?> getHoldingsNews() {
         log.info("Holdings news request received.");
         File file = new File(properties.getStorage().getHoldingsView());
+        log.info("Holdings view lookup path={} exists={}", file.getAbsolutePath(), file.exists());
+
         if (!file.exists()) {
-            return ResponseEntity.notFound().build();
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(NewsErrorResponse.builder()
+                    .status("error")
+                    .code("VIEW_NOT_FOUND")
+                    .message("Holdings news view not found.")
+                    .build());
         }
         
         log.info("Serving holdings file {}", file.getAbsolutePath());
@@ -61,11 +81,17 @@ public class NewsController {
     }
 
     @GetMapping(value = "/positions", produces = MediaType.APPLICATION_JSON_VALUE)
-    public ResponseEntity<Resource> getPositionsNews() {
+    public ResponseEntity<?> getPositionsNews() {
         log.info("Positions news request received.");
         File file = new File(properties.getStorage().getPositionsView());
+        log.info("Positions view lookup path={} exists={}", file.getAbsolutePath(), file.exists());
+
         if (!file.exists()) {
-            return ResponseEntity.notFound().build();
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(NewsErrorResponse.builder()
+                    .status("error")
+                    .code("VIEW_NOT_FOUND")
+                    .message("Positions news view not found.")
+                    .build());
         }
         
         log.info("Serving positions file {}", file.getAbsolutePath());

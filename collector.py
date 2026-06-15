@@ -126,6 +126,8 @@ class NewsCollector:
                                 holdings.add(item["isin"])
             except Exception as e:
                 logger.error(f"Failed to parse holdings: {e}")
+        else:
+            logger.warning(f"Holdings raw file missing at: {HOLDINGS_RAW}")
 
         positions = set()
         if POSITIONS_RAW.exists():
@@ -156,6 +158,8 @@ class NewsCollector:
                                 positions.add(isin)
             except Exception as e:
                 logger.error(f"Failed to parse positions: {e}")
+        else:
+            logger.warning(f"Positions raw file missing at: {POSITIONS_RAW}")
         
         return holdings, positions
 
@@ -175,6 +179,10 @@ class NewsCollector:
             json.dump(list(isins), f)
 
     def should_fetch_fno(self, isin):
+        archive_file = STORAGE_DIR / "instruments" / f"{isin}.jsonl"
+        if not archive_file.exists():
+            return True
+            
         meta_file = STORAGE_DIR / "metadata" / f"{isin}.json"
         if not meta_file.exists():
             return True
@@ -201,6 +209,7 @@ class NewsCollector:
 
     def fetch_and_store(self, isin, instrument_key=None):
         if not self.token:
+            logger.error(f"ISIN={isin} ArchiveCreated=false Reason=MISSING_TOKEN")
             return "FAILED"
 
         # Lookup instrument key if not provided
@@ -211,7 +220,7 @@ class NewsCollector:
                     break
         
         if not instrument_key:
-            logger.warning(f"No instrument key found for ISIN {isin}")
+            logger.warning(f"ISIN={isin} ArchiveCreated=false Reason=INSTRUMENT_KEY_NOT_FOUND")
             return "SKIPPED"
 
         url = f"{UPSTOX_API_URL}?category=instrument_keys&instrument_keys={instrument_key}"
@@ -220,17 +229,18 @@ class NewsCollector:
         try:
             response = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
             if response.status_code == 429:
+                logger.warning(f"ISIN={isin} Reason=RATE_LIMIT_HIT, retrying...")
                 time.sleep(1)
                 response = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
                 
             if response.status_code != 200:
-                logger.error(f"ISIN={isin} HTTP={response.status_code} ArchiveCreated=false Reason=HTTPError")
+                logger.error(f"ISIN={isin} HTTP={response.status_code} ArchiveCreated=false Reason=HTTP_ERROR")
                 return "FAILED"
                 
             data = response.json()
             
             if data.get("status") != "success":
-                logger.error(f"ISIN={isin} HTTP={response.status_code} ArchiveCreated=false Reason=APIStatusNotSuccess")
+                logger.error(f"ISIN={isin} HTTP={response.status_code} ArchiveCreated=false Reason=API_STATUS_FAILURE")
                 return "FAILED"
                 
             items = data.get("data", {}).get(instrument_key, [])
@@ -254,10 +264,6 @@ class NewsCollector:
                             total_articles += 1
                         except Exception:
                             continue
-                            
-            # Ensure file exists even if 0 articles
-            if not archive_file.exists():
-                archive_file.touch(exist_ok=True)
             
             new_articles = []
             for item in items:
@@ -283,9 +289,13 @@ class NewsCollector:
                         f.write(json.dumps(art) + "\n")
                 total_articles += len(new_articles)
             
-            # Verify actual article persistence (Bug 1.3)
+            # Ensure file exists even if 0 articles (Bug 1.3)
             if not archive_file.exists():
-                logger.error(f"Archive file not created for {isin}!")
+                archive_file.touch(exist_ok=True)
+            
+            # Verify actual article persistence
+            if not archive_file.exists():
+                logger.error(f"ISIN={isin} ArchiveCreated=false Reason=WRITE_FAILURE")
                 return "FAILED"
 
             # Update Metadata
@@ -300,16 +310,16 @@ class NewsCollector:
             with open(meta_file, "w") as f:
                 json.dump(meta, f, indent=2)
 
-            # Bug 1.2 & Phase 10: Improved Logging
             if total_fetched == 0:
-                logger.info(f"ISIN={isin} HTTP=200 Articles=0 ArchiveCreated=true Reason=NoArticlesReturned")
+                logger.info(f"ISIN={isin} HTTP=200 ArticlesReturned=0 ArchiveCreated=true Reason=NO_ARTICLES")
             else:
-                logger.info(f"Fetched {total_fetched} articles for {isin}, Appended {len(new_articles)} new articles, Skipped {total_fetched - len(new_articles)} duplicates. Storage path: {archive_file}")
+                logger.info(f"ISIN={isin} HTTP=200 ArticlesReturned={total_fetched} NewArticles={len(new_articles)} ArchiveCreated=true")
             return "SUCCESS"
             
         except Exception as e:
-            logger.error(f"ISIN={isin} HTTP=Unknown ArchiveCreated=false Reason=ExceptionError Message={e}")
+            logger.error(f"ISIN={isin} HTTP=Unknown ArchiveCreated=false Reason=EXCEPTION Message={e}")
             return "FAILED"
+
 
     def run(self):
         logger.info("=== Starting News Collection ===")
