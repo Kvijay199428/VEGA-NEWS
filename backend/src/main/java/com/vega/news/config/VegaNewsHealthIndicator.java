@@ -22,16 +22,28 @@ public class VegaNewsHealthIndicator implements HealthIndicator {
         File storageRoot = new File(properties.getStorage().getRoot());
         boolean storageReachable = storageRoot.exists() && storageRoot.isDirectory() && storageRoot.canRead();
 
-        if (instrumentLoaded && storageReachable) {
-            return Health.up()
-                    .withDetail("instrumentsLoaded", true)
-                    .withDetail("storageReachable", true)
-                    .build();
-        }
+        File holdingsView = new File(properties.getStorage().getHoldingsView());
+        boolean holdingsExists = holdingsView.exists() && holdingsView.isFile();
 
-        return Health.down()
+        File positionsView = new File(properties.getStorage().getPositionsView());
+        boolean positionsExists = positionsView.exists() && positionsView.isFile();
+
+        File metadataDir = new File(storageRoot, "metadata");
+        boolean metadataExists = metadataDir.exists() && metadataDir.isDirectory();
+
+        File instrumentsDir = new File(storageRoot, "instruments");
+        boolean instrumentsExists = instrumentsDir.exists() && instrumentsDir.isDirectory();
+
+        boolean allHealthy = instrumentLoaded && storageReachable && holdingsExists && positionsExists && metadataExists && instrumentsExists;
+
+        Health.Builder builder = allHealthy ? Health.up() : Health.down();
+        return builder
                 .withDetail("instrumentsLoaded", instrumentLoaded)
                 .withDetail("storageReachable", storageReachable)
+                .withDetail("holdingsExists", holdingsExists)
+                .withDetail("positionsExists", positionsExists)
+                .withDetail("metadataExists", metadataExists)
+                .withDetail("instrumentsDirExists", instrumentsExists)
                 .build();
     }
 }

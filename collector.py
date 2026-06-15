@@ -223,10 +223,14 @@ class NewsCollector:
                 time.sleep(1)
                 response = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
                 
-            response.raise_for_status()
+            if response.status_code != 200:
+                logger.error(f"ISIN={isin} HTTP={response.status_code} ArchiveCreated=false Reason=HTTPError")
+                return "FAILED"
+                
             data = response.json()
             
             if data.get("status") != "success":
+                logger.error(f"ISIN={isin} HTTP={response.status_code} ArchiveCreated=false Reason=APIStatusNotSuccess")
                 return "FAILED"
                 
             items = data.get("data", {}).get(instrument_key, [])
@@ -243,13 +247,17 @@ class NewsCollector:
                     for line in f:
                         try:
                             art = json.loads(line)
-                            h = art.get("hash") or art.get("sourceHash")
+                            h = art.get("sourceHash") or art.get("hash")
                             if h: existing_hashes.add(h)
                             pt = art.get("publishedTime", 0)
                             if pt > latest_time: latest_time = pt
                             total_articles += 1
                         except Exception:
                             continue
+                            
+            # Ensure file exists even if 0 articles
+            if not archive_file.exists():
+                archive_file.touch(exist_ok=True)
             
             new_articles = []
             for item in items:
@@ -261,10 +269,10 @@ class NewsCollector:
                     "articleLink": item.get("article_link", ""),
                     "publishedTime": item.get("published_time", int(time.time()*1000)),
                 }
-                art["hash"] = self.generate_hash(art)
-                if art["hash"] not in existing_hashes:
+                art["sourceHash"] = self.generate_hash(art)
+                if art["sourceHash"] not in existing_hashes:
                     new_articles.append(art)
-                    existing_hashes.add(art["hash"])
+                    existing_hashes.add(art["sourceHash"])
                     if art["publishedTime"] > latest_time:
                         latest_time = art["publishedTime"]
             
@@ -293,11 +301,14 @@ class NewsCollector:
                 json.dump(meta, f, indent=2)
 
             # Bug 1.2 & Phase 10: Improved Logging
-            logger.info(f"Fetched {total_fetched} articles for {isin}, Appended {len(new_articles)} new articles, Skipped {total_fetched - len(new_articles)} duplicates. Storage path: {archive_file}")
+            if total_fetched == 0:
+                logger.info(f"ISIN={isin} HTTP=200 Articles=0 ArchiveCreated=true Reason=NoArticlesReturned")
+            else:
+                logger.info(f"Fetched {total_fetched} articles for {isin}, Appended {len(new_articles)} new articles, Skipped {total_fetched - len(new_articles)} duplicates. Storage path: {archive_file}")
             return "SUCCESS"
             
         except Exception as e:
-            logger.error(f"Failed to fetch {isin}: {e}")
+            logger.error(f"ISIN={isin} HTTP=Unknown ArchiveCreated=false Reason=ExceptionError Message={e}")
             return "FAILED"
 
     def run(self):

@@ -25,6 +25,8 @@ public class NewsController {
 
     @GetMapping(value = "/instrument/{isin}", produces = MediaType.APPLICATION_JSON_VALUE)
     public ResponseEntity<Resource> getInstrumentNews(@PathVariable String isin) {
+        log.info("Instrument news request received. ISIN={}", isin);
+        
         if (isin == null || isin.trim().isEmpty() || !isin.matches("^[A-Z0-9]{12}$")) {
             return ResponseEntity.badRequest().build();
         }
@@ -33,6 +35,8 @@ public class NewsController {
         if (!file.exists()) {
             return ResponseEntity.notFound().build();
         }
+        
+        log.info("Serving archive file {}", file.getAbsolutePath());
         Resource resource = new FileSystemResource(file);
         return ResponseEntity.ok()
                 .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + file.getName() + "\"")
@@ -42,10 +46,13 @@ public class NewsController {
 
     @GetMapping(value = "/holdings", produces = MediaType.APPLICATION_JSON_VALUE)
     public ResponseEntity<Resource> getHoldingsNews() {
+        log.info("Holdings news request received.");
         File file = new File(properties.getStorage().getHoldingsView());
         if (!file.exists()) {
             return ResponseEntity.notFound().build();
         }
+        
+        log.info("Serving holdings file {}", file.getAbsolutePath());
         Resource resource = new FileSystemResource(file);
         return ResponseEntity.ok()
                 .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + file.getName() + "\"")
@@ -55,10 +62,13 @@ public class NewsController {
 
     @GetMapping(value = "/positions", produces = MediaType.APPLICATION_JSON_VALUE)
     public ResponseEntity<Resource> getPositionsNews() {
+        log.info("Positions news request received.");
         File file = new File(properties.getStorage().getPositionsView());
         if (!file.exists()) {
             return ResponseEntity.notFound().build();
         }
+        
+        log.info("Serving positions file {}", file.getAbsolutePath());
         Resource resource = new FileSystemResource(file);
         return ResponseEntity.ok()
                 .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + file.getName() + "\"")
