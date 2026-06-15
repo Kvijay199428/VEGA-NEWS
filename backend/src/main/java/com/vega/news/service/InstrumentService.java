@@ -115,6 +115,10 @@ public class InstrumentService {
         return info.getExchange() + "|" + isin;
     }
 
+    public boolean isLoaded() {
+        return !isinMap.isEmpty();
+    }
+
     @Data
     public static class InstrumentInfo {
         private String isin;

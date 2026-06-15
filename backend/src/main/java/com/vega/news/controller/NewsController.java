@@ -3,7 +3,6 @@ package com.vega.news.controller;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.vega.news.config.NewsProperties;
 import com.vega.news.model.NewsArticle;
-import com.vega.news.service.InstrumentNewsService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.core.io.FileSystemResource;
@@ -22,13 +21,23 @@ import java.util.List;
 @RequiredArgsConstructor
 public class NewsController {
 
-    private final InstrumentNewsService instrumentNewsService;
     private final NewsProperties properties;
 
-    @GetMapping("/instrument/{isin}")
-    public ResponseEntity<List<NewsArticle>> getInstrumentNews(@PathVariable String isin) {
-        List<NewsArticle> articles = instrumentNewsService.getArchivedNews(java.util.Collections.singleton(isin)).get(isin);
-        return ResponseEntity.ok(articles != null ? articles : java.util.Collections.emptyList());
+    @GetMapping(value = "/instrument/{isin}", produces = MediaType.APPLICATION_JSON_VALUE)
+    public ResponseEntity<Resource> getInstrumentNews(@PathVariable String isin) {
+        if (isin == null || isin.trim().isEmpty() || !isin.matches("^[A-Z0-9]{12}$")) {
+            return ResponseEntity.badRequest().build();
+        }
+        
+        File file = new File(properties.getStorage().getRoot() + "/instruments/" + isin + ".jsonl");
+        if (!file.exists()) {
+            return ResponseEntity.notFound().build();
+        }
+        Resource resource = new FileSystemResource(file);
+        return ResponseEntity.ok()
+                .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + file.getName() + "\"")
+                .contentType(MediaType.APPLICATION_OCTET_STREAM)
+                .body(resource);
     }
 
     @GetMapping(value = "/holdings", produces = MediaType.APPLICATION_JSON_VALUE)

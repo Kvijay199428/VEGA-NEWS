@@ -20,6 +20,6 @@ news:
   upstox:
     page-size: 100
   storage:
-    root: ${news.vega-root}/storage/news
-    holdings-view: ${news.vega-root}/storage/news/holdings.jsonl
-    positions-view: ${news.vega-root}/storage/news/positions.jsonl
+    root: ${news.vega-root}/storage/user/news
+    holdings-view: ${news.vega-root}/storage/user/news/holdings.jsonl
+    positions-view: ${news.vega-root}/storage/user/news/positions.jsonl
