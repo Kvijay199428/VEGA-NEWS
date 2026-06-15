@@ -21,7 +21,7 @@ public class NewsRetentionService {
     public void runRetentionCleanup() {
         log.info("Starting scheduled news retention cleanup");
         int retentionDays = properties.getRetention().getDays();
-        long cutoffTime = System.currentTimeMillis() - (retentionDays * 24L * 60L * 60L * 1000L);
+        long cutoffTime = System.currentTimeMillis() - java.time.Duration.ofDays(retentionDays).toMillis();
 
         List<String> isins = archiveService.getAllArchivedIsins();
         log.info("Checking retention for {} archived ISINs. Cutoff time: {}", isins.size(), cutoffTime);

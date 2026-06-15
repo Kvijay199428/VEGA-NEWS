@@ -5,22 +5,13 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 @Service
 public class NewsRefreshCoordinator {
-    private final AtomicBoolean holdingsRunning = new AtomicBoolean(false);
-    private final AtomicBoolean positionsRunning = new AtomicBoolean(false);
+    private final AtomicBoolean globalRefreshRunning = new AtomicBoolean(false);
 
-    public boolean tryLockHoldings() {
-        return holdingsRunning.compareAndSet(false, true);
+    public boolean tryLockRefresh() {
+        return globalRefreshRunning.compareAndSet(false, true);
     }
 
-    public void unlockHoldings() {
-        holdingsRunning.set(false);
-    }
-
-    public boolean tryLockPositions() {
-        return positionsRunning.compareAndSet(false, true);
-    }
-
-    public void unlockPositions() {
-        positionsRunning.set(false);
+    public void unlockRefresh() {
+        globalRefreshRunning.set(false);
     }
 }

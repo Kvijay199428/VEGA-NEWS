@@ -139,7 +139,7 @@ public class UpstoxNewsClient {
 
     private String generateSourceHash(String heading, String link, long time) {
         try {
-            String input = heading + link + time;
+            String input = (link != null && !link.isEmpty()) ? link : heading;
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
             byte[] hashBytes = digest.digest(input.getBytes(StandardCharsets.UTF_8));
             StringBuilder hexString = new StringBuilder();

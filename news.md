@@ -228,7 +228,7 @@ public class UpstoxNewsClient {
 
     private String generateSourceHash(String heading, String link, long time) {
         try {
-            String input = heading + link + time;
+            String input = (link != null && !link.isEmpty()) ? link : heading;
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
             byte[] hashBytes = digest.digest(input.getBytes(StandardCharsets.UTF_8));
             StringBuilder hexString = new StringBuilder();
@@ -323,7 +323,7 @@ import java.util.concurrent.Executors;
 @Configuration
 public class AsyncConfig {
 
-    @Bean
+    @Bean(destroyMethod = "close")
     public ExecutorService virtualThreadExecutor() {
         return Executors.newVirtualThreadPerTaskExecutor();
     }
@@ -438,7 +438,7 @@ public class NewsController {
 
     @GetMapping("/instrument/{isin}")
     public ResponseEntity<List<NewsArticle>> getInstrumentNews(@PathVariable String isin) {
-        List<NewsArticle> articles = instrumentNewsService.getNewsForIsins(java.util.Collections.singleton(isin)).get(isin);
+        List<NewsArticle> articles = instrumentNewsService.getArchivedNews(java.util.Collections.singleton(isin)).get(isin);
         return ResponseEntity.ok(articles != null ? articles : java.util.Collections.emptyList());
     }
 
@@ -538,7 +538,7 @@ public class NewsRefreshScheduler {
     // Refresh holdings every 15 minutes
     @Scheduled(fixedDelayString = "PT15M")
     public void refreshHoldingsNews() {
-        if (!coordinator.tryLockHoldings()) {
+        if (!coordinator.tryLockRefresh()) {
             log.warn("Skipping Holdings News refresh: already running");
             return;
         }
@@ -546,14 +546,14 @@ public class NewsRefreshScheduler {
             log.info("Running scheduled refresh for Holdings News");
             builderService.buildHoldingsView();
         } finally {
-            coordinator.unlockHoldings();
+            coordinator.unlockRefresh();
         }
     }
 
     // Refresh positions every 15 minutes
     @Scheduled(fixedDelayString = "PT15M", initialDelayString = "PT1M")
     public void refreshPositionsNews() {
-        if (!coordinator.tryLockPositions()) {
+        if (!coordinator.tryLockRefresh()) {
             log.warn("Skipping Positions News refresh: already running");
             return;
         }
@@ -561,7 +561,7 @@ public class NewsRefreshScheduler {
             log.info("Running scheduled refresh for Positions News");
             builderService.buildPositionsView();
         } finally {
-            coordinator.unlockPositions();
+            coordinator.unlockRefresh();
         }
     }
 }
@@ -1003,16 +1003,8 @@ public class NewsInstrumentArchiveService {
     private Set<String> getExistingHashes(String isin) {
         Path hashPath = getHashIndexPath(isin);
         if (Files.exists(hashPath)) {
-            try {
-                JsonNode root = objectMapper.readTree(hashPath.toFile());
-                JsonNode hashesNode = root.path("hashes");
-                if (hashesNode.isArray()) {
-                    Set<String> hashes = new HashSet<>();
-                    for (JsonNode node : hashesNode) {
-                        hashes.add(node.asText());
-                    }
-                    return hashes;
-                }
+            try (Stream<String> lines = Files.lines(hashPath)) {
+                return lines.collect(Collectors.toSet());
             } catch (IOException e) {
                 log.error("Failed to read hash index for ISIN: {}", isin, e);
             }
@@ -1045,10 +1037,7 @@ public class NewsInstrumentArchiveService {
         Path hashPath = getHashIndexPath(isin);
         try {
             Files.createDirectories(hashPath.getParent());
-            Map<String, Object> content = new HashMap<>();
-            content.put("isin", isin);
-            content.put("hashes", hashes);
-            Files.writeString(hashPath, objectMapper.writeValueAsString(content));
+            Files.write(hashPath, hashes);
         } catch (IOException e) {
             log.error("Failed to update hash index for ISIN: {}", isin, e);
         }
@@ -1079,7 +1068,7 @@ public class NewsInstrumentArchiveService {
     }
 
     private Path getHashIndexPath(String isin) {
-        return Paths.get(properties.getStorage().getRoot(), "metadata", "hashes", isin + ".json");
+        return Paths.get(properties.getStorage().getRoot(), "metadata", "hash-index", isin + ".txt");
     }
 }
 ```
@@ -1128,23 +1117,14 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 @Service
 public class NewsRefreshCoordinator {
-    private final AtomicBoolean holdingsRunning = new AtomicBoolean(false);
-    private final AtomicBoolean positionsRunning = new AtomicBoolean(false);
+    private final AtomicBoolean globalRefreshRunning = new AtomicBoolean(false);
 
-    public boolean tryLockHoldings() {
-        return holdingsRunning.compareAndSet(false, true);
+    public boolean tryLockRefresh() {
+        return globalRefreshRunning.compareAndSet(false, true);
     }
 
-    public void unlockHoldings() {
-        holdingsRunning.set(false);
-    }
-
-    public boolean tryLockPositions() {
-        return positionsRunning.compareAndSet(false, true);
-    }
-
-    public void unlockPositions() {
-        positionsRunning.set(false);
+    public void unlockRefresh() {
+        globalRefreshRunning.set(false);
     }
 }
 ```
@@ -1174,7 +1154,7 @@ public class NewsRetentionService {
     public void runRetentionCleanup() {
         log.info("Starting scheduled news retention cleanup");
         int retentionDays = properties.getRetention().getDays();
-        long cutoffTime = System.currentTimeMillis() - (retentionDays * 24L * 60L * 60L * 1000L);
+        long cutoffTime = System.currentTimeMillis() - java.time.Duration.ofDays(retentionDays).toMillis();
 
         List<String> isins = archiveService.getAllArchivedIsins();
         log.info("Checking retention for {} archived ISINs. Cutoff time: {}", isins.size(), cutoffTime);
@@ -1234,11 +1214,11 @@ public class PortfolioNewsBuilderService {
         addedIsins.removeAll(previousIsins);
 
         if (!addedIsins.isEmpty()) {
-            log.info("Detected {} new ISINs in holdings. Refreshing news for them.", addedIsins.size());
-            instrumentNewsService.refreshNews(addedIsins);
-        } else {
-            log.info("No new ISINs detected in holdings. Skipping API fetch.");
+            log.info("Detected {} new ISINs in holdings.", addedIsins.size());
         }
+
+        log.info("Refreshing news for all {} holdings ISINs.", currentIsins.size());
+        instrumentNewsService.refreshNews(currentIsins);
 
         buildView(currentIsins, Paths.get(properties.getStorage().getHoldingsView()));
         snapshotService.saveSnapshot("holdings", currentIsins);
@@ -1254,11 +1234,11 @@ public class PortfolioNewsBuilderService {
         addedIsins.removeAll(previousIsins);
 
         if (!addedIsins.isEmpty()) {
-            log.info("Detected {} new ISINs in positions. Refreshing news for them.", addedIsins.size());
-            instrumentNewsService.refreshNews(addedIsins);
-        } else {
-            log.info("No new ISINs detected in positions. Skipping API fetch.");
+            log.info("Detected {} new ISINs in positions.", addedIsins.size());
         }
+
+        log.info("Refreshing news for all {} positions ISINs.", currentIsins.size());
+        instrumentNewsService.refreshNews(currentIsins);
 
         buildView(currentIsins, Paths.get(properties.getStorage().getPositionsView()));
         snapshotService.saveSnapshot("positions", currentIsins);
@@ -1493,4 +1473,2124 @@ news:
     root: ${news.vega-root}/storage/news
     holdings-view: ${news.vega-root}/storage/news/holdings.jsonl
     positions-view: ${news.vega-root}/storage/news/positions.jsonl
+```
+
+```json
+// File: collector/news/INE002A01018/metadata.json
+{
+  "isin": "INE002A01018",
+  "symbol": "RELIANCE",
+  "name": "RELIANCE INDUSTRIES LTD",
+  "last_fetch": "2026-06-15T07:57:08.560528Z"
+}
+```
+
+```json
+// File: collector/news/INE003A01024/metadata.json
+{
+  "isin": "INE003A01024",
+  "symbol": "SIEMENS",
+  "name": "SIEMENS LTD",
+  "last_fetch": "2026-06-15T07:57:12.550569Z"
+}
+```
+
+```json
+// File: collector/news/INE006I01046/metadata.json
+{
+  "isin": "INE006I01046",
+  "symbol": "ASTRAL",
+  "name": "ASTRAL LIMITED",
+  "last_fetch": "2026-06-15T07:57:06.155384Z"
+}
+```
+
+```json
+// File: collector/news/INE009A01021/metadata.json
+{
+  "isin": "INE009A01021",
+  "symbol": "INFY",
+  "name": "INFOSYS LIMITED",
+  "last_fetch": "2026-06-15T07:57:04.991163Z"
+}
+```
+
+```json
+// File: collector/news/INE00H001014/metadata.json
+{
+  "isin": "INE00H001014",
+  "symbol": "SWIGGY",
+  "name": "SWIGGY LIMITED",
+  "last_fetch": "2026-06-15T07:57:10.762194Z"
+}
+```
+
+```json
+// File: collector/news/INE00R701025/metadata.json
+{
+  "isin": "INE00R701025",
+  "symbol": "DALBHARAT",
+  "name": "DALMIA BHARAT LIMITED",
+  "last_fetch": "2026-06-15T07:57:04.455586Z"
+}
+```
+
+```json
+// File: collector/news/INE010B01027/metadata.json
+{
+  "isin": "INE010B01027",
+  "symbol": "ZYDUSLIFE",
+  "name": "ZYDUS LIFESCIENCES LTD",
+  "last_fetch": "2026-06-15T07:57:09.602738Z"
+}
+```
+
+```json
+// File: collector/news/INE016A01026/metadata.json
+{
+  "isin": "INE016A01026",
+  "symbol": "DABUR",
+  "name": "DABUR INDIA LTD",
+  "last_fetch": "2026-06-15T07:57:12.704483Z"
+}
+```
+
+```json
+// File: collector/news/INE018A01030/metadata.json
+{
+  "isin": "INE018A01030",
+  "symbol": "LT",
+  "name": "LARSEN & TOUBRO LTD.",
+  "last_fetch": "2026-06-15T07:57:12.048631Z"
+}
+```
+
+```json
+// File: collector/news/INE018E01016/metadata.json
+{
+  "isin": "INE018E01016",
+  "symbol": "SBICARD",
+  "name": "SBI CARDS & PAY SER LTD",
+  "last_fetch": "2026-06-15T07:57:11.093639Z"
+}
+```
+
+```json
+// File: collector/news/INE019A01038/metadata.json
+{
+  "isin": "INE019A01038",
+  "symbol": "JSWSTEEL",
+  "name": "JSW STEEL LIMITED",
+  "last_fetch": "2026-06-15T07:57:08.372631Z"
+}
+```
+
+```json
+// File: collector/news/INE01EA01019/metadata.json
+{
+  "isin": "INE01EA01019",
+  "symbol": "VMM",
+  "name": "VISHAL MEGA MART LIMITED",
+  "last_fetch": "2026-06-15T07:57:05.318102Z"
+}
+```
+
+```json
+// File: collector/news/INE020B01018/metadata.json
+{
+  "isin": "INE020B01018",
+  "symbol": "RECLTD",
+  "name": "REC LIMITED",
+  "last_fetch": "2026-06-15T07:57:10.590930Z"
+}
+```
+
+```json
+// File: collector/news/INE021A01026/metadata.json
+{
+  "isin": "INE021A01026",
+  "symbol": "ASIANPAINT",
+  "name": "ASIAN PAINTS LIMITED",
+  "last_fetch": "2026-06-15T07:57:07.559305Z"
+}
+```
+
+```json
+// File: collector/news/INE022Q01020/metadata.json
+{
+  "isin": "INE022Q01020",
+  "symbol": "IEX",
+  "name": "INDIAN ENERGY EXC LTD",
+  "last_fetch": "2026-06-15T07:57:07.676323Z"
+}
+```
+
+```json
+// File: collector/news/INE027H01010/metadata.json
+{
+  "isin": "INE027H01010",
+  "symbol": "MAXHEALTH",
+  "name": "MAX HEALTHCARE INS LTD",
+  "last_fetch": "2026-06-15T07:57:06.775799Z"
+}
+```
+
+```json
+// File: collector/news/INE028A01039/metadata.json
+{
+  "isin": "INE028A01039",
+  "symbol": "BANKBARODA",
+  "name": "BANK OF BARODA",
+  "last_fetch": "2026-06-15T07:57:05.501376Z"
+}
+```
+
+```json
+// File: collector/news/INE029A01011/metadata.json
+{
+  "isin": "INE029A01011",
+  "symbol": "BPCL",
+  "name": "BHARAT PETROLEUM CORP  LT",
+  "last_fetch": "2026-06-15T07:57:12.543305Z"
+}
+```
+
+```json
+// File: collector/news/INE030A01027/metadata.json
+{
+  "isin": "INE030A01027",
+  "symbol": "HINDUNILVR",
+  "name": "HINDUSTAN UNILEVER LTD.",
+  "last_fetch": "2026-06-15T07:57:05.327388Z"
+}
+```
+
+```json
+// File: collector/news/INE038A01020/metadata.json
+{
+  "isin": "INE038A01020",
+  "symbol": "HINDALCO",
+  "name": "HINDALCO  INDUSTRIES  LTD",
+  "last_fetch": "2026-06-15T07:57:10.495094Z"
+}
+```
+
+```json
+// File: collector/news/INE040A01034/metadata.json
+{
+  "isin": "INE040A01034",
+  "symbol": "HDFCBANK",
+  "name": "HDFC BANK LTD",
+  "last_fetch": "2026-06-15T07:57:08.811191Z"
+}
+```
+
+```json
+// File: collector/news/INE040H01021/metadata.json
+{
+  "isin": "INE040H01021",
+  "symbol": "SUZLON",
+  "name": "SUZLON ENERGY LIMITED",
+  "last_fetch": "2026-06-15T07:57:11.998156Z"
+}
+```
+
+```json
+// File: collector/news/INE044A01036/metadata.json
+{
+  "isin": "INE044A01036",
+  "symbol": "SUNPHARMA",
+  "name": "SUN PHARMACEUTICAL IND L",
+  "last_fetch": "2026-06-15T07:57:10.357955Z"
+}
+```
+
+```json
+// File: collector/news/INE047A01021/metadata.json
+{
+  "isin": "INE047A01021",
+  "symbol": "GRASIM",
+  "name": "GRASIM INDUSTRIES LTD",
+  "last_fetch": "2026-06-15T07:57:06.999089Z"
+}
+```
+
+```json
+// File: collector/news/INE04I401011/metadata.json
+{
+  "isin": "INE04I401011",
+  "symbol": "KPITTECH",
+  "name": "KPIT TECHNOLOGIES LIMITED",
+  "last_fetch": "2026-06-15T07:57:10.516766Z"
+}
+```
+
+```json
+// File: collector/news/INE053A01029/metadata.json
+{
+  "isin": "INE053A01029",
+  "symbol": "INDHOTEL",
+  "name": "THE INDIAN HOTELS CO. LTD",
+  "last_fetch": "2026-06-15T07:57:08.076531Z"
+}
+```
+
+```json
+// File: collector/news/INE053F01010/metadata.json
+{
+  "isin": "INE053F01010",
+  "symbol": "IRFC",
+  "name": "INDIAN RAILWAY FIN CORP L",
+  "last_fetch": "2026-06-15T07:57:07.466543Z"
+}
+```
+
+```json
+// File: collector/news/INE059A01026/metadata.json
+{
+  "isin": "INE059A01026",
+  "symbol": "CIPLA",
+  "name": "CIPLA LTD",
+  "last_fetch": "2026-06-15T07:57:09.652422Z"
+}
+```
+
+```json
+// File: collector/news/INE061F01013/metadata.json
+{
+  "isin": "INE061F01013",
+  "symbol": "FORTIS",
+  "name": "FORTIS HEALTHCARE LTD",
+  "last_fetch": "2026-06-15T07:57:10.528880Z"
+}
+```
+
+```json
+// File: collector/news/INE062A01020/metadata.json
+{
+  "isin": "INE062A01020",
+  "symbol": "SBIN",
+  "name": "STATE BANK OF INDIA",
+  "last_fetch": "2026-06-15T07:57:06.432834Z"
+}
+```
+
+```json
+// File: collector/news/INE066A01021/metadata.json
+{
+  "isin": "INE066A01021",
+  "symbol": "EICHERMOT",
+  "name": "EICHER MOTORS LTD",
+  "last_fetch": "2026-06-15T07:57:09.069186Z"
+}
+```
+
+```json
+// File: collector/news/INE066F01020/metadata.json
+{
+  "isin": "INE066F01020",
+  "symbol": "HAL",
+  "name": "HINDUSTAN AERONAUTICS LTD",
+  "last_fetch": "2026-06-15T07:57:08.612771Z"
+}
+```
+
+```json
+// File: collector/news/INE066P01011/metadata.json
+{
+  "isin": "INE066P01011",
+  "symbol": "INOXWIND",
+  "name": "INOX WIND LIMITED",
+  "last_fetch": "2026-06-15T07:57:07.348861Z"
+}
+```
+
+```json
+// File: collector/news/INE067A01029/metadata.json
+{
+  "isin": "INE067A01029",
+  "symbol": "CGPOWER",
+  "name": "CG POWER AND IND SOL LTD",
+  "last_fetch": "2026-06-15T07:57:12.266581Z"
+}
+```
+
+```json
+// File: collector/news/INE070A01015/metadata.json
+{
+  "isin": "INE070A01015",
+  "symbol": "SHREECEM",
+  "name": "SHREE CEMENT LIMITED",
+  "last_fetch": "2026-06-15T07:57:04.590480Z"
+}
+```
+
+```json
+// File: collector/news/INE073K01018/metadata.json
+{
+  "isin": "INE073K01018",
+  "symbol": "SONACOMS",
+  "name": "SONA BLW PRECISION FRGS L",
+  "last_fetch": "2026-06-15T07:57:06.169841Z"
+}
+```
+
+```json
+// File: collector/news/INE075A01022/metadata.json
+{
+  "isin": "INE075A01022",
+  "symbol": "WIPRO",
+  "name": "WIPRO LTD",
+  "last_fetch": "2026-06-15T07:57:06.532867Z"
+}
+```
+
+```json
+// File: collector/news/INE079A01024/metadata.json
+{
+  "isin": "INE079A01024",
+  "symbol": "AMBUJACEM",
+  "name": "AMBUJA CEMENTS LTD",
+  "last_fetch": "2026-06-15T07:57:08.587217Z"
+}
+```
+
+```json
+// File: collector/news/INE07Y701011/metadata.json
+{
+  "isin": "INE07Y701011",
+  "symbol": "POWERINDIA",
+  "name": "HITACHI ENERGY INDIA LTD",
+  "last_fetch": "2026-06-15T07:57:12.390004Z"
+}
+```
+
+```json
+// File: collector/news/INE081A01020/metadata.json
+{
+  "isin": "INE081A01020",
+  "symbol": "TATASTEEL",
+  "name": "TATA STEEL LIMITED",
+  "last_fetch": "2026-06-15T07:57:06.384370Z"
+}
+```
+
+```json
+// File: collector/news/INE084A01016/metadata.json
+{
+  "isin": "INE084A01016",
+  "symbol": "BANKINDIA",
+  "name": "BANK OF INDIA",
+  "last_fetch": "2026-06-15T07:57:10.911145Z"
+}
+```
+
+```json
+// File: collector/news/INE089A01031/metadata.json
+{
+  "isin": "INE089A01031",
+  "symbol": "DRREDDY",
+  "name": "DR. REDDY S LABORATORIES",
+  "last_fetch": "2026-06-15T07:57:09.254697Z"
+}
+```
+
+```json
+// File: collector/news/INE090A01021/metadata.json
+{
+  "isin": "INE090A01021",
+  "symbol": "ICICIBANK",
+  "name": "ICICI BANK LTD.",
+  "last_fetch": "2026-06-15T07:57:11.952949Z"
+}
+```
+
+```json
+// File: collector/news/INE092T01019/metadata.json
+{
+  "isin": "INE092T01019",
+  "symbol": "IDFCFIRSTB",
+  "name": "IDFC FIRST BANK LIMITED",
+  "last_fetch": "2026-06-15T07:57:12.178025Z"
+}
+```
+
+```json
+// File: collector/news/INE093I01010/metadata.json
+{
+  "isin": "INE093I01010",
+  "symbol": "OBEROIRLTY",
+  "name": "OBEROI REALTY LIMITED",
+  "last_fetch": "2026-06-15T07:57:05.943704Z"
+}
+```
+
+```json
+// File: collector/news/INE094A01015/metadata.json
+{
+  "isin": "INE094A01015",
+  "symbol": "HINDPETRO",
+  "name": "HINDUSTAN PETROLEUM CORP",
+  "last_fetch": "2026-06-15T07:57:05.891802Z"
+}
+```
+
+```json
+// File: collector/news/INE095A01012/metadata.json
+{
+  "isin": "INE095A01012",
+  "symbol": "INDUSINDBK",
+  "name": "INDUSIND BANK LIMITED",
+  "last_fetch": "2026-06-15T07:57:10.039159Z"
+}
+```
+
+```json
+// File: collector/news/INE095N01031/metadata.json
+{
+  "isin": "INE095N01031",
+  "symbol": "NBCC",
+  "name": "NBCC (INDIA) LIMITED",
+  "last_fetch": "2026-06-15T07:57:08.393063Z"
+}
+```
+
+```json
+// File: collector/news/INE0BS701011/metadata.json
+{
+  "isin": "INE0BS701011",
+  "symbol": "PREMIERENE",
+  "name": "PREMIER ENERGIES LIMITED",
+  "last_fetch": "2026-06-15T07:57:10.680075Z"
+}
+```
+
+```json
+// File: collector/news/INE0J1Y01017/metadata.json
+{
+  "isin": "INE0J1Y01017",
+  "symbol": "LICI",
+  "name": "LIFE INSURA CORP OF INDIA",
+  "last_fetch": "2026-06-15T07:57:08.748907Z"
+}
+```
+
+```json
+// File: collector/news/INE0V6F01027/metadata.json
+{
+  "isin": "INE0V6F01027",
+  "symbol": "HYUNDAI",
+  "name": "HYUNDAI MOTOR INDIA LTD",
+  "last_fetch": "2026-06-15T07:57:09.496960Z"
+}
+```
+
+```json
+// File: collector/news/INE101A01026/metadata.json
+{
+  "isin": "INE101A01026",
+  "symbol": "M&M",
+  "name": "MAHINDRA & MAHINDRA LTD",
+  "last_fetch": "2026-06-15T07:57:11.750691Z"
+}
+```
+
+```json
+// File: collector/news/INE102D01028/metadata.json
+{
+  "isin": "INE102D01028",
+  "symbol": "GODREJCP",
+  "name": "GODREJ CONSUMER PRODUCTS",
+  "last_fetch": "2026-06-15T07:57:04.984529Z"
+}
+```
+
+```json
+// File: collector/news/INE111A01025/metadata.json
+{
+  "isin": "INE111A01025",
+  "symbol": "CONCOR",
+  "name": "CONTAINER CORP OF IND LTD",
+  "last_fetch": "2026-06-15T07:57:06.318654Z"
+}
+```
+
+```json
+// File: collector/news/INE114A01011/metadata.json
+{
+  "isin": "INE114A01011",
+  "symbol": "SAIL",
+  "name": "STEEL AUTHORITY OF INDIA",
+  "last_fetch": "2026-06-15T07:57:12.489354Z"
+}
+```
+
+```json
+// File: collector/news/INE115A01026/metadata.json
+{
+  "isin": "INE115A01026",
+  "symbol": "LICHSGFIN",
+  "name": "LIC HOUSING FINANCE LTD",
+  "last_fetch": "2026-06-15T07:57:07.766240Z"
+}
+```
+
+```json
+// File: collector/news/INE117A01022/metadata.json
+{
+  "isin": "INE117A01022",
+  "symbol": "ABB",
+  "name": "ABB INDIA LIMITED",
+  "last_fetch": "2026-06-15T07:57:07.958863Z"
+}
+```
+
+```json
+// File: collector/news/INE118A01012/metadata.json
+{
+  "isin": "INE118A01012",
+  "symbol": "BAJAJHLDNG",
+  "name": "BAJAJ HOLDINGS & INVS LTD",
+  "last_fetch": "2026-06-15T07:57:05.709423Z"
+}
+```
+
+```json
+// File: collector/news/INE118H01025/metadata.json
+{
+  "isin": "INE118H01025",
+  "symbol": "BSE",
+  "name": "BSE LIMITED",
+  "last_fetch": "2026-06-15T07:57:10.163580Z"
+}
+```
+
+```json
+// File: collector/news/INE121A01024/metadata.json
+{
+  "isin": "INE121A01024",
+  "symbol": "CHOLAFIN",
+  "name": "CHOLAMANDALAM IN & FIN CO",
+  "last_fetch": "2026-06-15T07:57:06.786967Z"
+}
+```
+
+```json
+// File: collector/news/INE121E01018/metadata.json
+{
+  "isin": "INE121E01018",
+  "symbol": "JSWENERGY",
+  "name": "JSW ENERGY LIMITED",
+  "last_fetch": "2026-06-15T07:57:08.354033Z"
+}
+```
+
+```json
+// File: collector/news/INE121J01017/metadata.json
+{
+  "isin": "INE121J01017",
+  "symbol": "INDUSTOWER",
+  "name": "INDUS TOWERS LIMITED",
+  "last_fetch": "2026-06-15T07:57:08.163608Z"
+}
+```
+
+```json
+// File: collector/news/INE123W01016/metadata.json
+{
+  "isin": "INE123W01016",
+  "symbol": "SBILIFE",
+  "name": "SBI LIFE INSURANCE CO LTD",
+  "last_fetch": "2026-06-15T07:57:05.680686Z"
+}
+```
+
+```json
+// File: collector/news/INE127D01025/metadata.json
+{
+  "isin": "INE127D01025",
+  "symbol": "HDFCAMC",
+  "name": "HDFC AMC LIMITED",
+  "last_fetch": "2026-06-15T07:57:07.549663Z"
+}
+```
+
+```json
+// File: collector/news/INE129A01019/metadata.json
+{
+  "isin": "INE129A01019",
+  "symbol": "GAIL",
+  "name": "GAIL (INDIA) LTD",
+  "last_fetch": "2026-06-15T07:57:12.469828Z"
+}
+```
+
+```json
+// File: collector/news/INE134E01011/metadata.json
+{
+  "isin": "INE134E01011",
+  "symbol": "PFC",
+  "name": "POWER FIN CORP LTD.",
+  "last_fetch": "2026-06-15T07:57:04.985525Z"
+}
+```
+
+```json
+// File: collector/news/INE138Y01010/metadata.json
+{
+  "isin": "INE138Y01010",
+  "symbol": "KFINTECH",
+  "name": "KFIN TECHNOLOGIES LIMITED",
+  "last_fetch": "2026-06-15T07:57:09.702316Z"
+}
+```
+
+```json
+// File: collector/news/INE139A01034/metadata.json
+{
+  "isin": "INE139A01034",
+  "symbol": "NATIONALUM",
+  "name": "NATIONAL ALUMINIUM CO LTD",
+  "last_fetch": "2026-06-15T07:57:04.455024Z"
+}
+```
+
+```json
+// File: collector/news/INE148I01020/metadata.json
+{
+  "isin": "INE148I01020",
+  "symbol": "SAMMAANCAP",
+  "name": "SAMMAAN CAPITAL LIMITED",
+  "last_fetch": "2026-06-15T07:57:09.792174Z"
+}
+```
+
+```json
+// File: collector/news/INE148O01028/metadata.json
+{
+  "isin": "INE148O01028",
+  "symbol": "DELHIVERY",
+  "name": "DELHIVERY LIMITED",
+  "last_fetch": "2026-06-15T07:57:11.741870Z"
+}
+```
+
+```json
+// File: collector/news/INE154A01025/metadata.json
+{
+  "isin": "INE154A01025",
+  "symbol": "ITC",
+  "name": "ITC LTD",
+  "last_fetch": "2026-06-15T07:57:11.541841Z"
+}
+```
+
+```json
+// File: collector/news/INE155A01022/metadata.json
+{
+  "isin": "INE155A01022",
+  "symbol": "TMPV",
+  "name": "TATA MOTORS PASS VEH LTD",
+  "last_fetch": "2026-06-15T07:57:09.831896Z"
+}
+```
+
+```json
+// File: collector/news/INE158A01026/metadata.json
+{
+  "isin": "INE158A01026",
+  "symbol": "HEROMOTOCO",
+  "name": "HERO MOTOCORP LIMITED",
+  "last_fetch": "2026-06-15T07:57:05.628957Z"
+}
+```
+
+```json
+// File: collector/news/INE160A01022/metadata.json
+{
+  "isin": "INE160A01022",
+  "symbol": "PNB",
+  "name": "PUNJAB NATIONAL BANK",
+  "last_fetch": "2026-06-15T07:57:04.869936Z"
+}
+```
+
+```json
+// File: collector/news/INE171A01029/metadata.json
+{
+  "isin": "INE171A01029",
+  "symbol": "FEDERALBNK",
+  "name": "FEDERAL BANK LTD",
+  "last_fetch": "2026-06-15T07:57:10.753200Z"
+}
+```
+
+```json
+// File: collector/news/INE171Z01026/metadata.json
+{
+  "isin": "INE171Z01026",
+  "symbol": "BDL",
+  "name": "BHARAT DYNAMICS LIMITED",
+  "last_fetch": "2026-06-15T07:57:04.605223Z"
+}
+```
+
+```json
+// File: collector/news/INE176B01034/metadata.json
+{
+  "isin": "INE176B01034",
+  "symbol": "HAVELLS",
+  "name": "HAVELLS INDIA LIMITED",
+  "last_fetch": "2026-06-15T07:57:11.335887Z"
+}
+```
+
+```json
+// File: collector/news/INE180A01020/metadata.json
+{
+  "isin": "INE180A01020",
+  "symbol": "MFSL",
+  "name": "MAX FINANCIAL SERV LTD",
+  "last_fetch": "2026-06-15T07:57:09.704987Z"
+}
+```
+
+```json
+// File: collector/news/INE192A01025/metadata.json
+{
+  "isin": "INE192A01025",
+  "symbol": "TATACONSUM",
+  "name": "TATA CONSUMER PRODUCT LTD",
+  "last_fetch": "2026-06-15T07:57:05.686066Z"
+}
+```
+
+```json
+// File: collector/news/INE192R01011/metadata.json
+{
+  "isin": "INE192R01011",
+  "symbol": "DMART",
+  "name": "AVENUE SUPERMARTS LIMITED",
+  "last_fetch": "2026-06-15T07:57:09.624872Z"
+}
+```
+
+```json
+// File: collector/news/INE195A01028/metadata.json
+{
+  "isin": "INE195A01028",
+  "symbol": "SUPREMEIND",
+  "name": "SUPREME INDUSTRIES LTD",
+  "last_fetch": "2026-06-15T07:57:10.153242Z"
+}
+```
+
+```json
+// File: collector/news/INE196A01026/metadata.json
+{
+  "isin": "INE196A01026",
+  "symbol": "MARICO",
+  "name": "MARICO LIMITED",
+  "last_fetch": "2026-06-15T07:57:08.087807Z"
+}
+```
+
+```json
+// File: collector/news/INE200A01026/metadata.json
+{
+  "isin": "INE200A01026",
+  "symbol": "GVT&D",
+  "name": "GE VERNOVA T&D INDIA LTD",
+  "last_fetch": "2026-06-15T07:57:08.867798Z"
+}
+```
+
+```json
+// File: collector/news/INE200M01039/metadata.json
+{
+  "isin": "INE200M01039",
+  "symbol": "VBL",
+  "name": "VARUN BEVERAGES LIMITED",
+  "last_fetch": "2026-06-15T07:57:12.675301Z"
+}
+```
+
+```json
+// File: collector/news/INE202E01016/metadata.json
+{
+  "isin": "INE202E01016",
+  "symbol": "IREDA",
+  "name": "INDIAN RENEWABLE ENERGY",
+  "last_fetch": "2026-06-15T07:57:09.022793Z"
+}
+```
+
+```json
+// File: collector/news/INE205A01025/metadata.json
+{
+  "isin": "INE205A01025",
+  "symbol": "VEDL",
+  "name": "VEDANTA LIMITED",
+  "last_fetch": "2026-06-15T07:57:06.779649Z"
+}
+```
+
+```json
+// File: collector/news/INE208A01029/metadata.json
+{
+  "isin": "INE208A01029",
+  "symbol": "ASHOKLEY",
+  "name": "ASHOK LEYLAND LTD",
+  "last_fetch": "2026-06-15T07:57:11.759171Z"
+}
+```
+
+```json
+// File: collector/news/INE211B01039/metadata.json
+{
+  "isin": "INE211B01039",
+  "symbol": "PHOENIXLTD",
+  "name": "THE PHOENIX MILLS LTD",
+  "last_fetch": "2026-06-15T07:57:07.315181Z"
+}
+```
+
+```json
+// File: collector/news/INE213A01029/metadata.json
+{
+  "isin": "INE213A01029",
+  "symbol": "ONGC",
+  "name": "OIL AND NATURAL GAS CORP.",
+  "last_fetch": "2026-06-15T07:57:07.376532Z"
+}
+```
+
+```json
+// File: collector/news/INE214T01019/metadata.json
+{
+  "isin": "INE214T01019",
+  "symbol": "LTM",
+  "name": "LTM LIMITED",
+  "last_fetch": "2026-06-15T07:57:11.326810Z"
+}
+```
+
+```json
+// File: collector/news/INE216A01030/metadata.json
+{
+  "isin": "INE216A01030",
+  "symbol": "BRITANNIA",
+  "name": "BRITANNIA INDUSTRIES LTD",
+  "last_fetch": "2026-06-15T07:57:06.255712Z"
+}
+```
+
+```json
+// File: collector/news/INE226A01021/metadata.json
+{
+  "isin": "INE226A01021",
+  "symbol": "VOLTAS",
+  "name": "VOLTAS LTD",
+  "last_fetch": "2026-06-15T07:57:06.957584Z"
+}
+```
+
+```json
+// File: collector/news/INE237A01036/metadata.json
+{
+  "isin": "INE237A01036",
+  "symbol": "KOTAKBANK",
+  "name": "KOTAK MAHINDRA BANK LTD",
+  "last_fetch": "2026-06-15T07:57:05.134122Z"
+}
+```
+
+```json
+// File: collector/news/INE238A01034/metadata.json
+{
+  "isin": "INE238A01034",
+  "symbol": "AXISBANK",
+  "name": "AXIS BANK LIMITED",
+  "last_fetch": "2026-06-15T07:57:10.387452Z"
+}
+```
+
+```json
+// File: collector/news/INE239A01024/metadata.json
+{
+  "isin": "INE239A01024",
+  "symbol": "NESTLEIND",
+  "name": "NESTLE INDIA LIMITED",
+  "last_fetch": "2026-06-15T07:57:07.993257Z"
+}
+```
+
+```json
+// File: collector/news/INE242A01010/metadata.json
+{
+  "isin": "INE242A01010",
+  "symbol": "IOC",
+  "name": "INDIAN OIL CORP LTD",
+  "last_fetch": "2026-06-15T07:57:10.507771Z"
+}
+```
+
+```json
+// File: collector/news/INE245A01021/metadata.json
+{
+  "isin": "INE245A01021",
+  "symbol": "TATAPOWER",
+  "name": "TATA POWER CO LTD",
+  "last_fetch": "2026-06-15T07:57:08.068065Z"
+}
+```
+
+```json
+// File: collector/news/INE249Z01020/metadata.json
+{
+  "isin": "INE249Z01020",
+  "symbol": "MAZDOCK",
+  "name": "MAZAGON DOCK SHIPBUIL LTD",
+  "last_fetch": "2026-06-15T07:57:11.476808Z"
+}
+```
+
+```json
+// File: collector/news/INE257A01026/metadata.json
+{
+  "isin": "INE257A01026",
+  "symbol": "BHEL",
+  "name": "BHEL",
+  "last_fetch": "2026-06-15T07:57:12.461965Z"
+}
+```
+
+```json
+// File: collector/news/INE259A01022/metadata.json
+{
+  "isin": "INE259A01022",
+  "symbol": "COLPAL",
+  "name": "COLGATE PALMOLIVE LTD.",
+  "last_fetch": "2026-06-15T07:57:12.272930Z"
+}
+```
+
+```json
+// File: collector/news/INE260B01028/metadata.json
+{
+  "isin": "INE260B01028",
+  "symbol": "GODFRYPHLP",
+  "name": "GODFREY PHILLIPS INDIA LT",
+  "last_fetch": "2026-06-15T07:57:08.773777Z"
+}
+```
+
+```json
+// File: collector/news/INE262H01021/metadata.json
+{
+  "isin": "INE262H01021",
+  "symbol": "PERSISTENT",
+  "name": "PERSISTENT SYSTEMS LTD",
+  "last_fetch": "2026-06-15T07:57:10.891370Z"
+}
+```
+
+```json
+// File: collector/news/INE263A01024/metadata.json
+{
+  "isin": "INE263A01024",
+  "symbol": "BEL",
+  "name": "BHARAT ELECTRONICS LTD",
+  "last_fetch": "2026-06-15T07:57:10.628048Z"
+}
+```
+
+```json
+// File: collector/news/INE267A01025/metadata.json
+{
+  "isin": "INE267A01025",
+  "symbol": "HINDZINC",
+  "name": "HINDUSTAN ZINC LIMITED",
+  "last_fetch": "2026-06-15T07:57:04.580860Z"
+}
+```
+
+```json
+// File: collector/news/INE271C01023/metadata.json
+{
+  "isin": "INE271C01023",
+  "symbol": "DLF",
+  "name": "DLF LIMITED",
+  "last_fetch": "2026-06-15T07:57:09.187962Z"
+}
+```
+
+```json
+// File: collector/news/INE274J01014/metadata.json
+{
+  "isin": "INE274J01014",
+  "symbol": "OIL",
+  "name": "OIL INDIA LTD",
+  "last_fetch": "2026-06-15T07:57:09.908872Z"
+}
+```
+
+```json
+// File: collector/news/INE280A01028/metadata.json
+{
+  "isin": "INE280A01028",
+  "symbol": "TITAN",
+  "name": "TITAN COMPANY LIMITED",
+  "last_fetch": "2026-06-15T07:57:09.759782Z"
+}
+```
+
+```json
+// File: collector/news/INE296A01032/metadata.json
+{
+  "isin": "INE296A01032",
+  "symbol": "BAJFINANCE",
+  "name": "BAJAJ FINANCE LIMITED",
+  "last_fetch": "2026-06-15T07:57:08.370192Z"
+}
+```
+
+```json
+// File: collector/news/INE298A01020/metadata.json
+{
+  "isin": "INE298A01020",
+  "symbol": "CUMMINSIND",
+  "name": "CUMMINS INDIA LTD",
+  "last_fetch": "2026-06-15T07:57:09.875815Z"
+}
+```
+
+```json
+// File: collector/news/INE298J01013/metadata.json
+{
+  "isin": "INE298J01013",
+  "symbol": "NAM-INDIA",
+  "name": "NIPPON L I A M LTD",
+  "last_fetch": "2026-06-15T07:57:06.781948Z"
+}
+```
+
+```json
+// File: collector/news/INE299U01018/metadata.json
+{
+  "isin": "INE299U01018",
+  "symbol": "CROMPTON",
+  "name": "CROMPT GREA CON ELEC LTD",
+  "last_fetch": "2026-06-15T07:57:08.805103Z"
+}
+```
+
+```json
+// File: collector/news/INE302A01020/metadata.json
+{
+  "isin": "INE302A01020",
+  "symbol": "EXIDEIND",
+  "name": "EXIDE INDUSTRIES LTD",
+  "last_fetch": "2026-06-15T07:57:09.613803Z"
+}
+```
+
+```json
+// File: collector/news/INE303R01014/metadata.json
+{
+  "isin": "INE303R01014",
+  "symbol": "KALYANKJIL",
+  "name": "KALYAN JEWELLERS IND LTD",
+  "last_fetch": "2026-06-15T07:57:11.769867Z"
+}
+```
+
+```json
+// File: collector/news/INE318A01026/metadata.json
+{
+  "isin": "INE318A01026",
+  "symbol": "PIDILITIND",
+  "name": "PIDILITE INDUSTRIES LTD",
+  "last_fetch": "2026-06-15T07:57:09.167258Z"
+}
+```
+
+```json
+// File: collector/news/INE323A01026/metadata.json
+{
+  "isin": "INE323A01026",
+  "symbol": "BOSCHLTD",
+  "name": "BOSCH LIMITED",
+  "last_fetch": "2026-06-15T07:57:11.247397Z"
+}
+```
+
+```json
+// File: collector/news/INE326A01037/metadata.json
+{
+  "isin": "INE326A01037",
+  "symbol": "LUPIN",
+  "name": "LUPIN LIMITED",
+  "last_fetch": "2026-06-15T07:57:07.170880Z"
+}
+```
+
+```json
+// File: collector/news/INE338I01027/metadata.json
+{
+  "isin": "INE338I01027",
+  "symbol": "MOTILALOFS",
+  "name": "MOTILAL OSWAL FIN LTD",
+  "last_fetch": "2026-06-15T07:57:10.378058Z"
+}
+```
+
+```json
+// File: collector/news/INE343H01029/metadata.json
+{
+  "isin": "INE343H01029",
+  "symbol": "SOLARINDS",
+  "name": "SOLAR INDUSTRIES (I) LTD",
+  "last_fetch": "2026-06-15T07:57:11.515699Z"
+}
+```
+
+```json
+// File: collector/news/INE347G01014/metadata.json
+{
+  "isin": "INE347G01014",
+  "symbol": "PETRONET",
+  "name": "PETRONET LNG LIMITED",
+  "last_fetch": "2026-06-15T07:57:12.209163Z"
+}
+```
+
+```json
+// File: collector/news/INE356A01018/metadata.json
+{
+  "isin": "INE356A01018",
+  "symbol": "MPHASIS",
+  "name": "MPHASIS LIMITED",
+  "last_fetch": "2026-06-15T07:57:07.677575Z"
+}
+```
+
+```json
+// File: collector/news/INE361B01024/metadata.json
+{
+  "isin": "INE361B01024",
+  "symbol": "DIVISLAB",
+  "name": "DIVI S LABORATORIES LTD",
+  "last_fetch": "2026-06-15T07:57:05.143673Z"
+}
+```
+
+```json
+// File: collector/news/INE364U01010/metadata.json
+{
+  "isin": "INE364U01010",
+  "symbol": "ADANIGREEN",
+  "name": "ADANI GREEN ENERGY LTD",
+  "last_fetch": "2026-06-15T07:57:10.161782Z"
+}
+```
+
+```json
+// File: collector/news/INE371P01015/metadata.json
+{
+  "isin": "INE371P01015",
+  "symbol": "AMBER",
+  "name": "AMBER ENTERPRISES (I) LTD",
+  "last_fetch": "2026-06-15T07:57:08.941503Z"
+}
+```
+
+```json
+// File: collector/news/INE376G01013/metadata.json
+{
+  "isin": "INE376G01013",
+  "symbol": "BIOCON",
+  "name": "BIOCON LIMITED.",
+  "last_fetch": "2026-06-15T07:57:04.991804Z"
+}
+```
+
+```json
+// File: collector/news/INE377N01017/metadata.json
+{
+  "isin": "INE377N01017",
+  "symbol": "WAAREEENER",
+  "name": "WAAREE ENERGIES LIMITED",
+  "last_fetch": "2026-06-15T07:57:06.639698Z"
+}
+```
+
+```json
+// File: collector/news/INE388Y01029/metadata.json
+{
+  "isin": "INE388Y01029",
+  "symbol": "NYKAA",
+  "name": "FSN E COMMERCE VENTURES",
+  "last_fetch": "2026-06-15T07:57:07.959786Z"
+}
+```
+
+```json
+// File: collector/news/INE397D01024/metadata.json
+{
+  "isin": "INE397D01024",
+  "symbol": "BHARTIARTL",
+  "name": "BHARTI AIRTEL LIMITED",
+  "last_fetch": "2026-06-15T07:57:09.626158Z"
+}
+```
+
+```json
+// File: collector/news/INE405E01023/metadata.json
+{
+  "isin": "INE405E01023",
+  "symbol": "UNOMINDA",
+  "name": "UNO MINDA LIMITED",
+  "last_fetch": "2026-06-15T07:57:05.689093Z"
+}
+```
+
+```json
+// File: collector/news/INE406A01037/metadata.json
+{
+  "isin": "INE406A01037",
+  "symbol": "AUROPHARMA",
+  "name": "AUROBINDO PHARMA LTD",
+  "last_fetch": "2026-06-15T07:57:11.742931Z"
+}
+```
+
+```json
+// File: collector/news/INE414G01012/metadata.json
+{
+  "isin": "INE414G01012",
+  "symbol": "MUTHOOTFIN",
+  "name": "MUTHOOT FINANCE LIMITED",
+  "last_fetch": "2026-06-15T07:57:07.284679Z"
+}
+```
+
+```json
+// File: collector/news/INE415G01027/metadata.json
+{
+  "isin": "INE415G01027",
+  "symbol": "RVNL",
+  "name": "RAIL VIKAS NIGAM LIMITED",
+  "last_fetch": "2026-06-15T07:57:11.280631Z"
+}
+```
+
+```json
+// File: collector/news/INE417T01026/metadata.json
+{
+  "isin": "INE417T01026",
+  "symbol": "POLICYBZR",
+  "name": "PB FINTECH LIMITED",
+  "last_fetch": "2026-06-15T07:57:11.174245Z"
+}
+```
+
+```json
+// File: collector/news/INE423A01024/metadata.json
+{
+  "isin": "INE423A01024",
+  "symbol": "ADANIENT",
+  "name": "ADANI ENTERPRISES LIMITED",
+  "last_fetch": "2026-06-15T07:57:12.304626Z"
+}
+```
+
+```json
+// File: collector/news/INE437A01024/metadata.json
+{
+  "isin": "INE437A01024",
+  "symbol": "APOLLOHOSP",
+  "name": "APOLLO HOSPITALS ENTER. L",
+  "last_fetch": "2026-06-15T07:57:07.962783Z"
+}
+```
+
+```json
+// File: collector/news/INE451A01017/metadata.json
+{
+  "isin": "INE451A01017",
+  "symbol": "FORCEMOT",
+  "name": "FORCE MOTORS LIMITED",
+  "last_fetch": "2026-06-15T07:57:09.421816Z"
+}
+```
+
+```json
+// File: collector/news/INE455K01017/metadata.json
+{
+  "isin": "INE455K01017",
+  "symbol": "POLYCAB",
+  "name": "POLYCAB INDIA LIMITED",
+  "last_fetch": "2026-06-15T07:57:11.597420Z"
+}
+```
+
+```json
+// File: collector/news/INE457L01029/metadata.json
+{
+  "isin": "INE457L01029",
+  "symbol": "PGEL",
+  "name": "PG ELECTROPLAST LTD",
+  "last_fetch": "2026-06-15T07:57:08.608214Z"
+}
+```
+
+```json
+// File: collector/news/INE465A01025/metadata.json
+{
+  "isin": "INE465A01025",
+  "symbol": "BHARATFORG",
+  "name": "BHARAT FORGE LTD",
+  "last_fetch": "2026-06-15T07:57:05.119314Z"
+}
+```
+
+```json
+// File: collector/news/INE466L01038/metadata.json
+{
+  "isin": "INE466L01038",
+  "symbol": "360ONE",
+  "name": "360 ONE WAM LIMITED",
+  "last_fetch": "2026-06-15T07:57:04.574019Z"
+}
+```
+
+```json
+// File: collector/news/INE467B01029/metadata.json
+{
+  "isin": "INE467B01029",
+  "symbol": "TCS",
+  "name": "TATA CONSULTANCY SERV LT",
+  "last_fetch": "2026-06-15T07:57:08.585419Z"
+}
+```
+
+```json
+// File: collector/news/INE472A01039/metadata.json
+{
+  "isin": "INE472A01039",
+  "symbol": "BLUESTARCO",
+  "name": "BLUE STAR LIMITED",
+  "last_fetch": "2026-06-15T07:57:11.949655Z"
+}
+```
+
+```json
+// File: collector/news/INE476A01022/metadata.json
+{
+  "isin": "INE476A01022",
+  "symbol": "CANBK",
+  "name": "CANARA BANK",
+  "last_fetch": "2026-06-15T07:57:05.398374Z"
+}
+```
+
+```json
+// File: collector/news/INE481G01011/metadata.json
+{
+  "isin": "INE481G01011",
+  "symbol": "ULTRACEMCO",
+  "name": "ULTRATECH CEMENT LIMITED",
+  "last_fetch": "2026-06-15T07:57:12.470296Z"
+}
+```
+
+```json
+// File: collector/news/INE484J01027/metadata.json
+{
+  "isin": "INE484J01027",
+  "symbol": "GODREJPROP",
+  "name": "GODREJ PROPERTIES LTD",
+  "last_fetch": "2026-06-15T07:57:06.692319Z"
+}
+```
+
+```json
+// File: collector/news/INE494B01023/metadata.json
+{
+  "isin": "INE494B01023",
+  "symbol": "TVSMOTOR",
+  "name": "TVS MOTOR COMPANY  LTD",
+  "last_fetch": "2026-06-15T07:57:09.504351Z"
+}
+```
+
+```json
+// File: collector/news/INE498L01015/metadata.json
+{
+  "isin": "INE498L01015",
+  "symbol": "LTF",
+  "name": "L&T FINANCE LIMITED",
+  "last_fetch": "2026-06-15T07:57:06.468853Z"
+}
+```
+
+```json
+// File: collector/news/INE522D01027/metadata.json
+{
+  "isin": "INE522D01027",
+  "symbol": "MANAPPURAM",
+  "name": "MANAPPURAM FINANCE LTD",
+  "last_fetch": "2026-06-15T07:57:04.433111Z"
+}
+```
+
+```json
+// File: collector/news/INE522F01014/metadata.json
+{
+  "isin": "INE522F01014",
+  "symbol": "COALINDIA",
+  "name": "COAL INDIA LTD",
+  "last_fetch": "2026-06-15T07:57:08.366610Z"
+}
+```
+
+```json
+// File: collector/news/INE528G01035/metadata.json
+{
+  "isin": "INE528G01035",
+  "symbol": "YESBANK",
+  "name": "YES BANK LIMITED",
+  "last_fetch": "2026-06-15T07:57:05.900512Z"
+}
+```
+
+```json
+// File: collector/news/INE531F01023/metadata.json
+{
+  "isin": "INE531F01023",
+  "symbol": "NUVAMA",
+  "name": "NUVAMA WEALTH MANAGE LTD",
+  "last_fetch": "2026-06-15T07:57:06.000517Z"
+}
+```
+
+```json
+// File: collector/news/INE540L01014/metadata.json
+{
+  "isin": "INE540L01014",
+  "symbol": "ALKEM",
+  "name": "ALKEM LABORATORIES LTD.",
+  "last_fetch": "2026-06-15T07:57:05.130126Z"
+}
+```
+
+```json
+// File: collector/news/INE545U01014/metadata.json
+{
+  "isin": "INE545U01014",
+  "symbol": "BANDHANBNK",
+  "name": "BANDHAN BANK LIMITED",
+  "last_fetch": "2026-06-15T07:57:11.429894Z"
+}
+```
+
+```json
+// File: collector/news/INE562A01011/metadata.json
+{
+  "isin": "INE562A01011",
+  "symbol": "INDIANB",
+  "name": "INDIAN BANK",
+  "last_fetch": "2026-06-15T07:57:10.189173Z"
+}
+```
+
+```json
+// File: collector/news/INE572E01012/metadata.json
+{
+  "isin": "INE572E01012",
+  "symbol": "PNBHOUSING",
+  "name": "PNB HOUSING FIN LTD.",
+  "last_fetch": "2026-06-15T07:57:10.090531Z"
+}
+```
+
+```json
+// File: collector/news/INE584A01023/metadata.json
+{
+  "isin": "INE584A01023",
+  "symbol": "NMDC",
+  "name": "NMDC LTD.",
+  "last_fetch": "2026-06-15T07:57:07.226645Z"
+}
+```
+
+```json
+// File: collector/news/INE585B01010/metadata.json
+{
+  "isin": "INE585B01010",
+  "symbol": "MARUTI",
+  "name": "MARUTI SUZUKI INDIA LTD.",
+  "last_fetch": "2026-06-15T07:57:04.457223Z"
+}
+```
+
+```json
+// File: collector/news/INE591G01025/metadata.json
+{
+  "isin": "INE591G01025",
+  "symbol": "COFORGE",
+  "name": "COFORGE LIMITED",
+  "last_fetch": "2026-06-15T07:57:04.779821Z"
+}
+```
+
+```json
+// File: collector/news/INE596I01020/metadata.json
+{
+  "isin": "INE596I01020",
+  "symbol": "CAMS",
+  "name": "COMPUTER AGE MNGT SER LTD",
+  "last_fetch": "2026-06-15T07:57:07.709761Z"
+}
+```
+
+```json
+// File: collector/news/INE603J01030/metadata.json
+{
+  "isin": "INE603J01030",
+  "symbol": "PIIND",
+  "name": "PI INDUSTRIES LTD",
+  "last_fetch": "2026-06-15T07:57:08.992997Z"
+}
+```
+
+```json
+// File: collector/news/INE619A01035/metadata.json
+{
+  "isin": "INE619A01035",
+  "symbol": "PATANJALI",
+  "name": "PATANJALI FOODS LIMITED",
+  "last_fetch": "2026-06-15T07:57:05.112127Z"
+}
+```
+
+```json
+// File: collector/news/INE628A01036/metadata.json
+{
+  "isin": "INE628A01036",
+  "symbol": "UPL",
+  "name": "UPL LIMITED",
+  "last_fetch": "2026-06-15T07:57:11.949203Z"
+}
+```
+
+```json
+// File: collector/news/INE634S01028/metadata.json
+{
+  "isin": "INE634S01028",
+  "symbol": "MANKIND",
+  "name": "MANKIND PHARMA LIMITED",
+  "last_fetch": "2026-06-15T07:57:09.616791Z"
+}
+```
+
+```json
+// File: collector/news/INE646L01027/metadata.json
+{
+  "isin": "INE646L01027",
+  "symbol": "INDIGO",
+  "name": "INTERGLOBE AVIATION LTD",
+  "last_fetch": "2026-06-15T07:57:09.483664Z"
+}
+```
+
+```json
+// File: collector/news/INE647A01010/metadata.json
+{
+  "isin": "INE647A01010",
+  "symbol": "SRF",
+  "name": "SRF LTD",
+  "last_fetch": "2026-06-15T07:57:10.641695Z"
+}
+```
+
+```json
+// File: collector/news/INE663F01032/metadata.json
+{
+  "isin": "INE663F01032",
+  "symbol": "NAUKRI",
+  "name": "INFO EDGE (I) LTD",
+  "last_fetch": "2026-06-15T07:57:09.016079Z"
+}
+```
+
+```json
+// File: collector/news/INE669C01036/metadata.json
+{
+  "isin": "INE669C01036",
+  "symbol": "TECHM",
+  "name": "TECH MAHINDRA LIMITED",
+  "last_fetch": "2026-06-15T07:57:06.200516Z"
+}
+```
+
+```json
+// File: collector/news/INE669E01016/metadata.json
+{
+  "isin": "INE669E01016",
+  "symbol": "IDEA",
+  "name": "VODAFONE IDEA LIMITED",
+  "last_fetch": "2026-06-15T07:57:07.323022Z"
+}
+```
+
+```json
+// File: collector/news/INE670A01012/metadata.json
+{
+  "isin": "INE670A01012",
+  "symbol": "TATAELXSI",
+  "name": "TATA ELXSI LIMITED",
+  "last_fetch": "2026-06-15T07:57:12.661938Z"
+}
+```
+
+```json
+// File: collector/news/INE670K01029/metadata.json
+{
+  "isin": "INE670K01029",
+  "symbol": "LODHA",
+  "name": "LODHA DEVELOPERS LIMITED",
+  "last_fetch": "2026-06-15T07:57:05.526722Z"
+}
+```
+
+```json
+// File: collector/news/INE674K01013/metadata.json
+{
+  "isin": "INE674K01013",
+  "symbol": "ABCAPITAL",
+  "name": "ADITYA BIRLA CAPITAL LTD.",
+  "last_fetch": "2026-06-15T07:57:05.850200Z"
+}
+```
+
+```json
+// File: collector/news/INE685A01028/metadata.json
+{
+  "isin": "INE685A01028",
+  "symbol": "TORNTPHARM",
+  "name": "TORRENT PHARMACEUTICALS L",
+  "last_fetch": "2026-06-15T07:57:10.647207Z"
+}
+```
+
+```json
+// File: collector/news/INE692A01016/metadata.json
+{
+  "isin": "INE692A01016",
+  "symbol": "UNIONBANK",
+  "name": "UNION BANK OF INDIA",
+  "last_fetch": "2026-06-15T07:57:10.509596Z"
+}
+```
+
+```json
+// File: collector/news/INE702C01027/metadata.json
+{
+  "isin": "INE702C01027",
+  "symbol": "APLAPOLLO",
+  "name": "APL APOLLO TUBES LTD",
+  "last_fetch": "2026-06-15T07:57:07.948230Z"
+}
+```
+
+```json
+// File: collector/news/INE704P01025/metadata.json
+{
+  "isin": "INE704P01025",
+  "symbol": "COCHINSHIP",
+  "name": "COCHIN SHIPYARD LIMITED",
+  "last_fetch": "2026-06-15T07:57:07.468429Z"
+}
+```
+
+```json
+// File: collector/news/INE721A01047/metadata.json
+{
+  "isin": "INE721A01047",
+  "symbol": "SHRIRAMFIN",
+  "name": "SHRIRAM FINANCE LIMITED",
+  "last_fetch": "2026-06-15T07:57:05.535649Z"
+}
+```
+
+```json
+// File: collector/news/INE726G01019/metadata.json
+{
+  "isin": "INE726G01019",
+  "symbol": "ICICIPRULI",
+  "name": "ICICI PRU LIFE INS CO LTD",
+  "last_fetch": "2026-06-15T07:57:06.138813Z"
+}
+```
+
+```json
+// File: collector/news/INE732I01021/metadata.json
+{
+  "isin": "INE732I01021",
+  "symbol": "ANGELONE",
+  "name": "ANGEL ONE LIMITED",
+  "last_fetch": "2026-06-15T07:57:09.691693Z"
+}
+```
+
+```json
+// File: collector/news/INE733E01010/metadata.json
+{
+  "isin": "INE733E01010",
+  "symbol": "NTPC",
+  "name": "NTPC LTD",
+  "last_fetch": "2026-06-15T07:57:07.714642Z"
+}
+```
+
+```json
+// File: collector/news/INE736A01011/metadata.json
+{
+  "isin": "INE736A01011",
+  "symbol": "CDSL",
+  "name": "CENTRAL DEPO SER (I) LTD",
+  "last_fetch": "2026-06-15T07:57:04.839159Z"
+}
+```
+
+```json
+// File: collector/news/INE742F01042/metadata.json
+{
+  "isin": "INE742F01042",
+  "symbol": "ADANIPORTS",
+  "name": "ADANI PORT & SEZ LTD",
+  "last_fetch": "2026-06-15T07:57:07.037104Z"
+}
+```
+
+```json
+// File: collector/news/INE745G01043/metadata.json
+{
+  "isin": "INE745G01043",
+  "symbol": "MCX",
+  "name": "MULTI COMMODITY EXCHANGE",
+  "last_fetch": "2026-06-15T07:57:05.373515Z"
+}
+```
+
+```json
+// File: collector/news/INE749A01030/metadata.json
+{
+  "isin": "INE749A01030",
+  "symbol": "JINDALSTEL",
+  "name": "JINDAL STEEL LIMITED",
+  "last_fetch": "2026-06-15T07:57:04.590069Z"
+}
+```
+
+```json
+// File: collector/news/INE752E01010/metadata.json
+{
+  "isin": "INE752E01010",
+  "symbol": "POWERGRID",
+  "name": "POWER GRID CORP. LTD.",
+  "last_fetch": "2026-06-15T07:57:09.132969Z"
+}
+```
+
+```json
+// File: collector/news/INE758E01017/metadata.json
+{
+  "isin": "INE758E01017",
+  "symbol": "JIOFIN",
+  "name": "JIO FIN SERVICES LTD",
+  "last_fetch": "2026-06-15T07:57:09.244230Z"
+}
+```
+
+```json
+// File: collector/news/INE758T01015/metadata.json
+{
+  "isin": "INE758T01015",
+  "symbol": "ETERNAL",
+  "name": "ETERNAL LIMITED",
+  "last_fetch": "2026-06-15T07:57:11.532082Z"
+}
+```
+
+```json
+// File: collector/news/INE761H01022/metadata.json
+{
+  "isin": "INE761H01022",
+  "symbol": "PAGEIND",
+  "name": "PAGE INDUSTRIES LTD",
+  "last_fetch": "2026-06-15T07:57:09.362326Z"
+}
+```
+
+```json
+// File: collector/news/INE765G01017/metadata.json
+{
+  "isin": "INE765G01017",
+  "symbol": "ICICIGI",
+  "name": "ICICI LOMBARD GIC LIMITED",
+  "last_fetch": "2026-06-15T07:57:12.447143Z"
+}
+```
+
+```json
+// File: collector/news/INE775A01035/metadata.json
+{
+  "isin": "INE775A01035",
+  "symbol": "MOTHERSON",
+  "name": "SAMVRDHNA MTHRSN INTL LTD",
+  "last_fetch": "2026-06-15T07:57:11.113441Z"
+}
+```
+
+```json
+// File: collector/news/INE776C01039/metadata.json
+{
+  "isin": "INE776C01039",
+  "symbol": "GMRAIRPORT",
+  "name": "GMR AIRPORTS LIMITED",
+  "last_fetch": "2026-06-15T07:57:11.166848Z"
+}
+```
+
+```json
+// File: collector/news/INE795G01014/metadata.json
+{
+  "isin": "INE795G01014",
+  "symbol": "HDFCLIFE",
+  "name": "HDFC LIFE INS CO LTD",
+  "last_fetch": "2026-06-15T07:57:09.751525Z"
+}
+```
+
+```json
+// File: collector/news/INE797F01020/metadata.json
+{
+  "isin": "INE797F01020",
+  "symbol": "JUBLFOOD",
+  "name": "JUBILANT FOODWORKS LTD",
+  "last_fetch": "2026-06-15T07:57:09.706052Z"
+}
+```
+
+```json
+// File: collector/news/INE811K01011/metadata.json
+{
+  "isin": "INE811K01011",
+  "symbol": "PRESTIGE",
+  "name": "PRESTIGE ESTATE LTD",
+  "last_fetch": "2026-06-15T07:57:05.307592Z"
+}
+```
+
+```json
+// File: collector/news/INE814H01029/metadata.json
+{
+  "isin": "INE814H01029",
+  "symbol": "ADANIPOWER",
+  "name": "ADANI POWER LTD",
+  "last_fetch": "2026-06-15T07:57:04.837255Z"
+}
+```
+
+```json
+// File: collector/news/INE848E01016/metadata.json
+{
+  "isin": "INE848E01016",
+  "symbol": "NHPC",
+  "name": "NHPC LTD",
+  "last_fetch": "2026-06-15T07:57:09.276080Z"
+}
+```
+
+```json
+// File: collector/news/INE849A01020/metadata.json
+{
+  "isin": "INE849A01020",
+  "symbol": "TRENT",
+  "name": "TRENT LTD",
+  "last_fetch": "2026-06-15T07:57:06.189391Z"
+}
+```
+
+```json
+// File: collector/news/INE854D01024/metadata.json
+{
+  "isin": "INE854D01024",
+  "symbol": "UNITDSPR",
+  "name": "UNITED SPIRITS LIMITED",
+  "last_fetch": "2026-06-15T07:57:07.041099Z"
+}
+```
+
+```json
+// File: collector/news/INE860A01027/metadata.json
+{
+  "isin": "INE860A01027",
+  "symbol": "HCLTECH",
+  "name": "HCL TECHNOLOGIES LTD",
+  "last_fetch": "2026-06-15T07:57:10.751521Z"
+}
+```
+
+```json
+// File: collector/news/INE878B01027/metadata.json
+{
+  "isin": "INE878B01027",
+  "symbol": "KEI",
+  "name": "KEI INDUSTRIES LTD.",
+  "last_fetch": "2026-06-15T07:57:11.064863Z"
+}
+```
+
+```json
+// File: collector/news/INE881D01027/metadata.json
+{
+  "isin": "INE881D01027",
+  "symbol": "OFSS",
+  "name": "ORACLE FIN SERV SOFT LTD.",
+  "last_fetch": "2026-06-15T07:57:09.746557Z"
+}
+```
+
+```json
+// File: collector/news/INE917I01010/metadata.json
+{
+  "isin": "INE917I01010",
+  "symbol": "BAJAJ-AUTO",
+  "name": "BAJAJ AUTO LIMITED",
+  "last_fetch": "2026-06-15T07:57:04.449455Z"
+}
+```
+
+```json
+// File: collector/news/INE918I01026/metadata.json
+{
+  "isin": "INE918I01026",
+  "symbol": "BAJAJFINSV",
+  "name": "BAJAJ FINSERV LTD.",
+  "last_fetch": "2026-06-15T07:57:09.183293Z"
+}
+```
+
+```json
+// File: collector/news/INE918Z01012/metadata.json
+{
+  "isin": "INE918Z01012",
+  "symbol": "KAYNES",
+  "name": "KAYNES TECHNOLOGY IND LTD",
+  "last_fetch": "2026-06-15T07:57:04.993530Z"
+}
+```
+
+```json
+// File: collector/news/INE931S01010/metadata.json
+{
+  "isin": "INE931S01010",
+  "symbol": "ADANIENSOL",
+  "name": "ADANI ENERGY SOLUTION LTD",
+  "last_fetch": "2026-06-15T07:57:07.438409Z"
+}
+```
+
+```json
+// File: collector/news/INE935A01035/metadata.json
+{
+  "isin": "INE935A01035",
+  "symbol": "GLENMARK",
+  "name": "GLENMARK PHARMACEUTICALS",
+  "last_fetch": "2026-06-15T07:57:12.522757Z"
+}
+```
+
+```json
+// File: collector/news/INE935N01020/metadata.json
+{
+  "isin": "INE935N01020",
+  "symbol": "DIXON",
+  "name": "DIXON TECHNO (INDIA) LTD",
+  "last_fetch": "2026-06-15T07:57:10.365304Z"
+}
+```
+
+```json
+// File: collector/news/INE944F01028/metadata.json
+{
+  "isin": "INE944F01028",
+  "symbol": "RADICO",
+  "name": "RADICO KHAITAN LTD",
+  "last_fetch": "2026-06-15T07:57:09.921527Z"
+}
+```
+
+```json
+// File: collector/news/INE947Q01028/metadata.json
+{
+  "isin": "INE947Q01028",
+  "symbol": "LAURUSLABS",
+  "name": "LAURUS LABS LIMITED",
+  "last_fetch": "2026-06-15T07:57:09.171010Z"
+}
+```
+
+```json
+// File: collector/news/INE949L01017/metadata.json
+{
+  "isin": "INE949L01017",
+  "symbol": "AUBANK",
+  "name": "AU SMALL FINANCE BANK LTD",
+  "last_fetch": "2026-06-15T07:57:09.717499Z"
+}
+```
+
+```json
+// File: collector/news/INE974X01010/metadata.json
+{
+  "isin": "INE974X01010",
+  "symbol": "TIINDIA",
+  "name": "TUBE INVEST OF INDIA LTD",
+  "last_fetch": "2026-06-15T07:57:06.860395Z"
+}
+```
+
+```json
+// File: collector/news/INE976G01028/metadata.json
+{
+  "isin": "INE976G01028",
+  "symbol": "RBLBANK",
+  "name": "RBL BANK LIMITED",
+  "last_fetch": "2026-06-15T07:57:10.779267Z"
+}
+```
+
+```json
+// File: collector/news/INE982J01020/metadata.json
+{
+  "isin": "INE982J01020",
+  "symbol": "PAYTM",
+  "name": "ONE 97 COMMUNICATIONS LTD",
+  "last_fetch": "2026-06-15T07:57:09.281809Z"
+}
+```
+
+```json
+// File: news/state/holdings_snapshot.json
+[]
+```
+
+```json
+// File: news/state/positions_snapshot.json
+[]
 ```

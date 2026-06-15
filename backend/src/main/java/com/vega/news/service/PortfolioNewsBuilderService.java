@@ -39,11 +39,11 @@ public class PortfolioNewsBuilderService {
         addedIsins.removeAll(previousIsins);
 
         if (!addedIsins.isEmpty()) {
-            log.info("Detected {} new ISINs in holdings. Refreshing news for them.", addedIsins.size());
-            instrumentNewsService.refreshNews(addedIsins);
-        } else {
-            log.info("No new ISINs detected in holdings. Skipping API fetch.");
+            log.info("Detected {} new ISINs in holdings.", addedIsins.size());
         }
+
+        log.info("Refreshing news for all {} holdings ISINs.", currentIsins.size());
+        instrumentNewsService.refreshNews(currentIsins);
 
         buildView(currentIsins, Paths.get(properties.getStorage().getHoldingsView()));
         snapshotService.saveSnapshot("holdings", currentIsins);
@@ -59,11 +59,11 @@ public class PortfolioNewsBuilderService {
         addedIsins.removeAll(previousIsins);
 
         if (!addedIsins.isEmpty()) {
-            log.info("Detected {} new ISINs in positions. Refreshing news for them.", addedIsins.size());
-            instrumentNewsService.refreshNews(addedIsins);
-        } else {
-            log.info("No new ISINs detected in positions. Skipping API fetch.");
+            log.info("Detected {} new ISINs in positions.", addedIsins.size());
         }
+
+        log.info("Refreshing news for all {} positions ISINs.", currentIsins.size());
+        instrumentNewsService.refreshNews(currentIsins);
 
         buildView(currentIsins, Paths.get(properties.getStorage().getPositionsView()));
         snapshotService.saveSnapshot("positions", currentIsins);

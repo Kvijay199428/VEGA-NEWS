@@ -158,16 +158,8 @@ public class NewsInstrumentArchiveService {
     private Set<String> getExistingHashes(String isin) {
         Path hashPath = getHashIndexPath(isin);
         if (Files.exists(hashPath)) {
-            try {
-                JsonNode root = objectMapper.readTree(hashPath.toFile());
-                JsonNode hashesNode = root.path("hashes");
-                if (hashesNode.isArray()) {
-                    Set<String> hashes = new HashSet<>();
-                    for (JsonNode node : hashesNode) {
-                        hashes.add(node.asText());
-                    }
-                    return hashes;
-                }
+            try (Stream<String> lines = Files.lines(hashPath)) {
+                return lines.collect(Collectors.toSet());
             } catch (IOException e) {
                 log.error("Failed to read hash index for ISIN: {}", isin, e);
             }
@@ -200,10 +192,7 @@ public class NewsInstrumentArchiveService {
         Path hashPath = getHashIndexPath(isin);
         try {
             Files.createDirectories(hashPath.getParent());
-            Map<String, Object> content = new HashMap<>();
-            content.put("isin", isin);
-            content.put("hashes", hashes);
-            Files.writeString(hashPath, objectMapper.writeValueAsString(content));
+            Files.write(hashPath, hashes);
         } catch (IOException e) {
             log.error("Failed to update hash index for ISIN: {}", isin, e);
         }
@@ -234,6 +223,6 @@ public class NewsInstrumentArchiveService {
     }
 
     private Path getHashIndexPath(String isin) {
-        return Paths.get(properties.getStorage().getRoot(), "metadata", "hashes", isin + ".json");
+        return Paths.get(properties.getStorage().getRoot(), "metadata", "hash-index", isin + ".txt");
     }
 }
