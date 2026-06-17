@@ -1,9 +1,9 @@
 package com.vega.news.controller;
 
 import com.vega.news.config.NewsProperties;
-import com.vega.news.model.NewsArticle;
 import com.vega.news.model.NewsErrorResponse;
 import com.vega.news.service.InstrumentService;
+import jakarta.servlet.http.HttpServletRequest;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.core.io.FileSystemResource;
@@ -16,7 +16,6 @@ import org.springframework.web.bind.annotation.*;
 
 import java.io.File;
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
 
 @Slf4j
@@ -40,9 +39,26 @@ public class NewsController {
         long archiveCount = countFiles(instrumentsDir, ".jsonl");
         int expectedFno = instrumentService.getFnoInstrumentCount();
         
+        File[] archives = instrumentsDir.listFiles((d, name) -> name.endsWith(".jsonl"));
+        long emptyArchives = 0;
+        long totalArticles = 0;
+        if (archives != null) {
+            for (File f : archives) {
+                if (f.length() == 0) {
+                    emptyArchives++;
+                } else {
+                    totalArticles += countLines(f);
+                }
+            }
+        }
+        
+        stats.put("status", "healthy");
         stats.put("fnoInstruments", expectedFno);
         stats.put("archives", archiveCount);
         stats.put("metadata", metadataCount);
+        stats.put("emptyArchives", emptyArchives);
+        stats.put("archivesWithNews", archiveCount - emptyArchives);
+        stats.put("totalArticles", totalArticles);
         stats.put("missingArchives", Math.max(0, expectedFno - archiveCount));
         stats.put("storageRoot", storageRoot.getAbsolutePath());
         
@@ -55,11 +71,26 @@ public class NewsController {
         return files != null ? files.length : 0;
     }
 
+    private long countLines(File file) {
+        try {
+            return java.nio.file.Files.lines(file.toPath()).count();
+        } catch (Exception e) {
+            return 0;
+        }
+    }
+
     @GetMapping(value = "/instrument/{isin}", produces = MediaType.APPLICATION_JSON_VALUE)
-    public ResponseEntity<?> getInstrumentNews(@PathVariable String isin) {
-        log.info("Instrument news request received. ISIN={}", isin);
+    public ResponseEntity<?> getInstrumentNews(@PathVariable String isin, HttpServletRequest request) {
+        long startTime = System.currentTimeMillis();
+        InstrumentService.InstrumentInfo info = instrumentService.getInstrument(isin);
+        String symbol = info != null ? info.getSymbol() : "UNKNOWN";
+        String company = info != null ? info.getName() : "UNKNOWN";
+
+        log.info("[REQUEST] Type=InstrumentNews ISIN={} Symbol={} Company={} RemoteIP={}", 
+                isin, symbol, company, request.getRemoteAddr());
         
         if (isin == null || isin.trim().isEmpty() || !isin.matches("^[A-Z0-9]{12}$")) {
+            log.warn("[INVALID_REQUEST] Input={} Reason=INVALID_ISIN", isin);
             return ResponseEntity.badRequest().body(NewsErrorResponse.builder()
                     .status("error")
                     .code("INVALID_ISIN")
@@ -69,9 +100,9 @@ public class NewsController {
         }
         
         File file = new File(properties.getStorage().getRoot() + "/instruments/" + isin + ".jsonl");
-        log.info("Archive lookup path={} exists={}", file.getAbsolutePath(), file.exists());
 
         if (!file.exists()) {
+            log.info("[NOT_FOUND] ISIN={} Symbol={} ArchiveExists=false", isin, symbol);
             return ResponseEntity.status(HttpStatus.NOT_FOUND).body(NewsErrorResponse.builder()
                     .status("error")
                     .code("ARCHIVE_NOT_FOUND")
@@ -79,8 +110,22 @@ public class NewsController {
                     .message("News archive not found for the requested ISIN.")
                     .build());
         }
+
+        if (file.length() == 0) {
+            log.info("[RESPONSE] ISIN={} Status=200 ArchiveExists=true Articles=0 Duration={}ms", 
+                    isin, System.currentTimeMillis() - startTime);
+            return ResponseEntity.ok().body(NewsErrorResponse.builder()
+                    .status("success")
+                    .code("NO_ARTICLES")
+                    .isin(isin)
+                    .message("No articles currently available.")
+                    .build());
+        }
         
-        log.info("Serving archive file {}", file.getAbsolutePath());
+        long articleCount = countLines(file);
+        log.info("[RESPONSE] ISIN={} Status=200 ArchiveExists=true Articles={} Bytes={} Duration={}ms", 
+                isin, articleCount, file.length(), System.currentTimeMillis() - startTime);
+
         Resource resource = new FileSystemResource(file);
         return ResponseEntity.ok()
                 .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + file.getName() + "\"")
@@ -89,20 +134,27 @@ public class NewsController {
     }
 
     @GetMapping(value = "/holdings", produces = MediaType.APPLICATION_JSON_VALUE)
-    public ResponseEntity<?> getHoldingsNews() {
-        log.info("Holdings news request received.");
+    public ResponseEntity<?> getHoldingsNews(HttpServletRequest request) {
+        long startTime = System.currentTimeMillis();
+        log.info("[REQUEST] Type=HoldingsNews RemoteIP={}", request.getRemoteAddr());
+        
         File file = new File(properties.getStorage().getHoldingsView());
-        log.info("Holdings view lookup path={} exists={}", file.getAbsolutePath(), file.exists());
 
-        if (!file.exists()) {
+        if (!file.exists() || file.length() == 0) {
+            log.info("[RESPONSE] Type=HoldingsNews Status=404 ArchiveExists={} Duration={}ms", 
+                    file.exists(), System.currentTimeMillis() - startTime);
             return ResponseEntity.status(HttpStatus.NOT_FOUND).body(NewsErrorResponse.builder()
                     .status("error")
                     .code("VIEW_NOT_FOUND")
-                    .message("Holdings news view not found.")
+                    .message("Holdings news view not found or empty.")
                     .build());
         }
         
-        log.info("Serving holdings file {}", file.getAbsolutePath());
+        long articleCount = countLines(file);
+        log.info("[HOLDINGS] Articles={} Size={}KB", articleCount, file.length() / 1024);
+        log.info("[RESPONSE] Type=HoldingsNews Status=200 Articles={} Bytes={} Duration={}ms", 
+                articleCount, file.length(), System.currentTimeMillis() - startTime);
+
         Resource resource = new FileSystemResource(file);
         return ResponseEntity.ok()
                 .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + file.getName() + "\"")
@@ -111,20 +163,27 @@ public class NewsController {
     }
 
     @GetMapping(value = "/positions", produces = MediaType.APPLICATION_JSON_VALUE)
-    public ResponseEntity<?> getPositionsNews() {
-        log.info("Positions news request received.");
+    public ResponseEntity<?> getPositionsNews(HttpServletRequest request) {
+        long startTime = System.currentTimeMillis();
+        log.info("[REQUEST] Type=PositionsNews RemoteIP={}", request.getRemoteAddr());
+        
         File file = new File(properties.getStorage().getPositionsView());
-        log.info("Positions view lookup path={} exists={}", file.getAbsolutePath(), file.exists());
 
-        if (!file.exists()) {
+        if (!file.exists() || file.length() == 0) {
+            log.info("[RESPONSE] Type=PositionsNews Status=404 ArchiveExists={} Duration={}ms", 
+                    file.exists(), System.currentTimeMillis() - startTime);
             return ResponseEntity.status(HttpStatus.NOT_FOUND).body(NewsErrorResponse.builder()
                     .status("error")
                     .code("VIEW_NOT_FOUND")
-                    .message("Positions news view not found.")
+                    .message("Positions news view not found or empty.")
                     .build());
         }
         
-        log.info("Serving positions file {}", file.getAbsolutePath());
+        long articleCount = countLines(file);
+        log.info("[POSITIONS] Articles={} Size={}KB", articleCount, file.length() / 1024);
+        log.info("[RESPONSE] Type=PositionsNews Status=200 Articles={} Bytes={} Duration={}ms", 
+                articleCount, file.length(), System.currentTimeMillis() - startTime);
+
         Resource resource = new FileSystemResource(file);
         return ResponseEntity.ok()
                 .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + file.getName() + "\"")

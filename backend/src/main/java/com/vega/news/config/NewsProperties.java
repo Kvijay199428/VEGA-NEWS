@@ -40,6 +40,8 @@ public class NewsProperties {
         private String root;
         private String holdingsView;
         private String positionsView;
+        private String holdingsRaw;
+        private String positionsRaw;
 
         public String getRoot() { return root; }
         public void setRoot(String root) { this.root = root; }
@@ -47,5 +49,9 @@ public class NewsProperties {
         public void setHoldingsView(String holdingsView) { this.holdingsView = holdingsView; }
         public String getPositionsView() { return positionsView; }
         public void setPositionsView(String positionsView) { this.positionsView = positionsView; }
+        public String getHoldingsRaw() { return holdingsRaw; }
+        public void setHoldingsRaw(String holdingsRaw) { this.holdingsRaw = holdingsRaw; }
+        public String getPositionsRaw() { return positionsRaw; }
+        public void setPositionsRaw(String positionsRaw) { this.positionsRaw = positionsRaw; }
     }
 }

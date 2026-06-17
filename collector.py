@@ -226,40 +226,43 @@ class NewsCollector:
                 if item.get("isin") == isin and item.get("segment") == "NSE_EQ":
                     instrument_key = item.get("instrument_key")
                     break
-        
+
         if not instrument_key:
             logger.warning(f"ISIN={isin} ArchiveCreated=false Reason=INSTRUMENT_KEY_NOT_FOUND")
             return "SKIPPED"
 
         url = f"{UPSTOX_API_URL}?category=instrument_keys&instrument_keys={instrument_key}"
         headers = {"Accept": "application/json", "Authorization": f"Bearer {self.token}"}
-        
+
         try:
             response = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
             if response.status_code == 429:
-                logger.warning(f"ISIN={isin} Reason=RATE_LIMIT_HIT, retrying...")
+                logger.warning(f"[RATE_LIMIT_HIT] ISIN={isin} Attempt=1")
                 time.sleep(1)
                 response = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
-                
+                if response.status_code == 429:
+                    logger.error(f"[RATE_LIMIT_FAILED] ISIN={isin}")
+                    return "FAILED"
+
             if response.status_code != 200:
                 logger.error(f"ISIN={isin} HTTP={response.status_code} ArchiveCreated=false Reason=HTTP_ERROR")
                 return "FAILED"
-                
+
             data = response.json()
-            
+
             if data.get("status") != "success":
                 logger.error(f"ISIN={isin} HTTP={response.status_code} ArchiveCreated=false Reason=API_STATUS_FAILURE")
                 return "FAILED"
-                
+
             items = data.get("data", {}).get(instrument_key, [])
             total_fetched = len(items)
-            
+
             # Load existing hashes
             archive_file = STORAGE_DIR / "instruments" / f"{isin}.jsonl"
             existing_hashes = set()
             latest_time = 0
             total_articles = 0
-            
+
             if archive_file.exists():
                 with open(archive_file, "r") as f:
                     for line in f:
@@ -272,7 +275,7 @@ class NewsCollector:
                             total_articles += 1
                         except Exception:
                             continue
-            
+
             new_articles = []
             for item in items:
                 art = {
@@ -289,18 +292,18 @@ class NewsCollector:
                     existing_hashes.add(art["sourceHash"])
                     if art["publishedTime"] > latest_time:
                         latest_time = art["publishedTime"]
-            
+
             # Append new
             if new_articles:
                 with open(archive_file, "a") as f:
                     for art in new_articles:
                         f.write(json.dumps(art) + "\n")
                 total_articles += len(new_articles)
-            
+
             # Ensure file exists even if 0 articles (Bug 1.3)
             if not archive_file.exists():
                 archive_file.touch(exist_ok=True)
-            
+
             # Verify actual article persistence
             if not archive_file.exists():
                 logger.error(f"ISIN={isin} ArchiveCreated=false Reason=WRITE_FAILURE")
@@ -323,22 +326,21 @@ class NewsCollector:
             else:
                 logger.info(f"ISIN={isin} HTTP=200 ArticlesReturned={total_fetched} NewArticles={len(new_articles)} ArchiveCreated=true")
             return "SUCCESS"
-            
+
         except Exception as e:
             logger.error(f"ISIN={isin} HTTP=Unknown ArchiveCreated=false Reason=EXCEPTION Message={e}")
             return "FAILED"
 
-
     def run(self):
         logger.info("=== Starting News Collection ===")
-        
+
         # 0. Collector Audit
         fno_count = len(self.fno_equities)
         present_archives = 0
         for isin in self.fno_equities:
             if (STORAGE_DIR / "instruments" / f"{isin}.jsonl").exists():
                 present_archives += 1
-        
+
         missing_archives = fno_count - present_archives
         logger.info(f"Audit: F&O instruments={fno_count}, Archives present={present_archives}, Missing archives={missing_archives}")
 
@@ -346,25 +348,25 @@ class NewsCollector:
         holdings, positions = self.read_portfolio()
         old_holdings = self.load_snapshot("holdings")
         old_positions = self.load_snapshot("positions")
-        
+
         added_holdings = holdings - old_holdings
         added_positions = positions - old_positions
         added_isins = added_holdings | added_positions
-        
+
         if added_isins:
             logger.info(f"Detected {len(added_isins)} new portfolio ISINs. Fetching news immediately...")
             for isin in added_isins:
                 self.fetch_and_store(isin)
-        
+
         self.save_snapshot("holdings", holdings)
         self.save_snapshot("positions", positions)
-        
+
         # 2. Fetch F&O Equities
         to_fetch_fno = [rec for isin, rec in self.fno_equities.items() if self.should_fetch_fno(isin)]
-        
+
         logger.info(f"Found {len(to_fetch_fno)} F&O equities requiring update.")
         success, failed, skipped = 0, 0, 0
-        
+
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
             futures = {executor.submit(self.fetch_and_store, rec["isin"], rec["instrument_key"]): rec for rec in to_fetch_fno}
             for future in as_completed(futures):
@@ -372,16 +374,36 @@ class NewsCollector:
                 if result == "SUCCESS": success += 1
                 elif result == "FAILED": failed += 1
                 elif result == "SKIPPED": skipped += 1
-                
+
+        # 3. Post-Collection Statistics
+        archives_with_news = 0
+        empty_archives = 0
+        total_articles = 0
+        for isin in self.fno_equities:
+            archive_file = STORAGE_DIR / "instruments" / f"{isin}.jsonl"
+            if archive_file.exists():
+                size = archive_file.stat().st_size
+                if size == 0:
+                    empty_archives += 1
+                else:
+                    archives_with_news += 1
+                    with open(archive_file, "r") as f:
+                        total_articles += sum(1 for line in f if line.strip())
+
         logger.info("=== Collection Summary ===")
-        logger.info(f"Success: {success}")
-        logger.info(f"Failed:  {failed}")
-        logger.info(f"Skipped: {skipped}")
+        logger.info(f"Requests Success: {success}")
+        logger.info(f"Requests Failed:  {failed}")
+        logger.info(f"Requests Skipped: {skipped}")
+        logger.info(f"Archives Created: {success}")
+        logger.info(f"Archives With News: {archives_with_news}")
+        logger.info(f"Archives Empty: {empty_archives}")
+        logger.info(f"Total Articles Collected: {total_articles}")
         logger.info("============================")
-        
-        # 3. Build Views (Phase 8)
+
+        # 4. Build Views (Phase 8)
         self.build_views("holdings", holdings)
         self.build_views("positions", positions)
+
 
     def build_views(self, name, isins):
         logger.info(f"Building {name} view for {len(isins)} ISINs...")

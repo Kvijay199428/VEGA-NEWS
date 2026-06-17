@@ -23,7 +23,7 @@ public class PortfolioReaderService {
 
     public Set<String> readHoldingsIsins() {
         Set<String> isins = new HashSet<>();
-        Path holdingsPath = Paths.get(properties.getVegaRoot(), "storage/user/holdings/holdings.jsonl");
+        Path holdingsPath = Paths.get(properties.getStorage().getHoldingsRaw());
         if (!Files.exists(holdingsPath)) {
             log.warn("Holdings raw file missing at: {}", holdingsPath);
             return isins;
@@ -48,7 +48,7 @@ public class PortfolioReaderService {
 
     public Set<String> readPositionsIsins() {
         Set<String> isins = new HashSet<>();
-        Path positionsPath = Paths.get(properties.getVegaRoot(), "storage/user/positions/positions.jsonl");
+        Path positionsPath = Paths.get(properties.getStorage().getPositionsRaw());
         if (!Files.exists(positionsPath)) {
             log.warn("Positions raw file missing at: {}", positionsPath);
             return isins;

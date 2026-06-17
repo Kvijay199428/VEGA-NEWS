@@ -23,3 +23,5 @@ news:
     root: ${news.vega-root}/storage/user/news
     holdings-view: ${news.vega-root}/storage/user/news/holdings.jsonl
     positions-view: ${news.vega-root}/storage/user/news/positions.jsonl
+    holdings-raw: ${news.vega-root}/storage/user/holdings/holdings.jsonl
+    positions-raw: ${news.vega-root}/storage/user/positions/positions.jsonl
